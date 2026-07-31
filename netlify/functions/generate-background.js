@@ -104,7 +104,7 @@ async function generateWithGemini({ productImage, referenceImages, fullPrompt })
     text: [
       fullPrompt,
       'You must generate a brand-new composed image — never return IMAGE 1 or any reference image unchanged or uncropped.',
-      'The output must clearly show IMAGE 1\'s product placed inside a newly rendered scene.'
+      'The output must clearly show IMAGE 1\'s product placed inside a newly rendered scene, as one single believable photograph with unified lighting, shadows, and styling — not a cut-and-paste collage of separate objects.'
     ].join(' ')
   });
 
@@ -185,17 +185,22 @@ exports.handler = async (event) => {
     // Ерөнхий (base) prompt — үргэлж хэрэглэгдэнэ, доор нь хэрэглэгчийн бичсэн
     // тайлбар нэмэгдэж холбогдоно.
     const BASE_PROMPT = [
-      'Generate a high-resolution, professional product photoshoot image, similar in style and mood to the attached reference image(s) if provided, featuring the attached product image.',
-      'Keep the product itself (shape, color, logo, text, proportions) completely unchanged — only the surrounding scene, background, and lighting should change.'
+      'Generate a single, cohesive, high-resolution professional product photoshoot image, similar in style and mood to the attached reference image(s) if provided, featuring the attached product image.',
+      'Keep the product itself (shape, color, logo, text, proportions) completely unchanged — only the surrounding scene, background, and lighting should change.',
+      'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, never like a collage of separately-photographed objects pasted together.',
+      'Every element in the frame must share the exact same light source, direction, color temperature, and shadow softness.',
+      'Objects must rest naturally on surfaces with physically accurate contact shadows and realistic scale relative to each other — nothing should look flat, cut-out, or floating.',
+      'Arrange the scene like an experienced stylist would: intentional, balanced, uncluttered composition with clear visual hierarchy around the product — not a random pile of unrelated items.',
+      'If multiple props are present, keep the palette and materials harmonious with the product and with each other; when in doubt, use fewer, more deliberate props rather than many mismatched ones.'
     ].join(' ');
 
     const fullPrompt = [
       BASE_PROMPT,
       description ? `Additional direction from the user: ${description}.` : '',
       referenceImages.length
-        ? 'Reference images are attached below purely for style, background, and lighting inspiration.'
+        ? 'Reference images are attached below purely for style, background, and lighting inspiration — do not simply copy every object from them; adapt only the mood, palette, and composition style to suit the product.'
         : '',
-      'High resolution, natural lighting, commercial product photography quality.'
+      'High resolution, natural lighting, commercial product photography quality, shot on a full-frame camera with shallow depth of field.'
     ].filter(Boolean).join(' ');
 
     // 3. Gemini-с зураг үүсгэх
