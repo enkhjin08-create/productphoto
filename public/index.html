@@ -258,6 +258,42 @@
     animation:spin .8s linear infinite;
   }
   @keyframes spin{ to{ transform:rotate(360deg); } }
+  .edit-panel{
+    display:flex;
+    gap:8px;
+    margin-top:14px;
+  }
+  .edit-panel input[type="text"]{
+    flex:1;
+    padding:12px 14px;
+    border-radius:9px;
+    border:1px solid var(--line);
+    background:var(--panel);
+    color:var(--ink);
+    font-family:'Inter', sans-serif;
+    font-size:13.5px;
+  }
+  .edit-panel input[type="text"]::placeholder{
+    color:var(--ink-dim);
+  }
+  button.secondary{
+    padding:0 18px;
+    border-radius:9px;
+    border:1px solid var(--accent);
+    background:transparent;
+    color:var(--ink);
+    font-family:'Inter', sans-serif;
+    font-weight:600;
+    font-size:13.5px;
+    cursor:pointer;
+    white-space:nowrap;
+    transition:var(--transition);
+  }
+  button.secondary:hover{ background:var(--accent-soft); }
+  button.secondary:disabled{
+    opacity:.45;
+    cursor:not-allowed;
+  }
   .gallery{
     margin-top:28px;
   }
@@ -390,6 +426,11 @@
       <div class="stage" id="stage">
         <span class="stage-label" id="stageLabel">ZuvkhunTuund</span>
         <div class="stage-empty" id="stageEmpty">Бүтээгдэхүүнийхээ зургийг<br>оруулаад эхлүүлнэ үү</div>
+      </div>
+
+      <div class="edit-panel hidden" id="editPanel">
+        <input type="text" id="editPrompt" placeholder="Юу засах вэ? жишээ: дэвсгэрийг илүү гэрэлтэй болго, аяга арай баруун тийш шилжүүл...">
+        <button class="secondary" id="editBtn">Дахин үүсгэх</button>
       </div>
 
       <div class="gallery">
@@ -562,52 +603,22 @@ async function pollStatus(requestId, maxWaitMs = 180000, intervalMs = 2000, onTi
 const stage = document.getElementById('stage');
 const stageEmpty = document.getElementById('stageEmpty');
 const genError = document.getElementById('genError');
+const editPanel = document.getElementById('editPanel');
+const editPrompt = document.getElementById('editPrompt');
+const editBtn = document.getElementById('editBtn');
 
-generateBtn.onclick = async () => {
+let lastResultUrl = null; // хамгийн сүүлд амжилттай үүссэн зургийн GitHub URL — засварлахад ашиглана
+
+// Нийтлэг generate+polling logic — эхний generate болон дараагийн "засварлах"
+// (regenerate) хоёулаа энийг дуудна.
+async function runGeneration({ productImageUrl, referenceImageUrls, description, btnEl, defaultBtnText }){
   genError.classList.add('hidden');
+  btnEl.disabled = true;
 
-  const description = document.getElementById('descriptionPrompt').value.trim();
-
-  generateBtn.disabled = true;
-  generateBtn.textContent = 'Эхлүүлж байна...';
-  stageEmpty.classList.add('hidden');
-  stage.querySelectorAll('img, .stage-actions').forEach(el => el.remove());
-
-  const spinner = document.createElement('div');
-  spinner.className = 'spinner';
-  spinner.id = 'genSpinner';
-  stage.appendChild(spinner);
-
-  // Уникал requestId — background function энэ ID-аар Firestore бичлэг үүсгэнэ,
-  // frontend мөн энэ ID-аар status.js-г polling хийнэ.
   const requestId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   try {
-    // 1. Оролтын зургуудыг эхлээд synchronous function-оор GitHub руу upload хийнэ
-    // (Gemini орохгүй тул хурдан, 6MB хүртэл payload зөвшөөрдөг тул зураг багтана).
-    generateBtn.textContent = 'Зураг байршуулж байна...';
-    const uploadRes = await fetch('/.netlify/functions/upload-input', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requestId,
-        image: uploadedBase64,
-        mimeType: uploadedMime,
-        references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
-      })
-    });
-
-    if(!uploadRes.ok){
-      const errText = await uploadRes.text();
-      throw new Error('Зураг байршуулахад алдаа гарлаа: ' + (errText || uploadRes.status));
-    }
-
-    const { productUrl, referenceUrls } = await uploadRes.json();
-
-    // 2. Background function-г зөвхөн жижиг payload (URL-ууд)-тойгоор "явуулаад мартана"
-    // — background function-ий ~256KB payload хязгаарт багтахын тулд base64 биш,
-    // GitHub URL-ыг л дамжуулна. Client энэ дуудалтын хариуг удаан хүлээх шаардлагагүй.
-    generateBtn.textContent = 'Үүсгэж байна...';
+    btnEl.textContent = 'Үүсгэж байна...';
     fetch('/.netlify/functions/generate-background', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -615,17 +626,16 @@ generateBtn.onclick = async () => {
         requestId,
         brand: currentBrand,
         description,
-        productImageUrl: productUrl,
-        referenceImageUrls: referenceUrls
+        productImageUrl,
+        referenceImageUrls
       })
     }).catch(() => {
       // Энэ fetch өөрөө network дээр амжилтгүй болсон ч — доорх polling
       // үргэлжлэх тул энд алдаа шидэхгүй, зөвхөн үл тоомсорлоно.
     });
 
-    // status.js-г 2 секунд тутам, дээд тал нь 3 минутын турш polling хийнэ
     const result = await pollStatus(requestId, 180000, 2000, (elapsedSec) => {
-      generateBtn.textContent = `Үүсгэж байна... (${elapsedSec}с)`;
+      btnEl.textContent = `Үүсгэж байна... (${elapsedSec}с)`;
     });
 
     if(!result){
@@ -637,6 +647,8 @@ generateBtn.onclick = async () => {
     }
 
     document.getElementById('genSpinner')?.remove();
+    stageEmpty.classList.add('hidden');
+    stage.querySelectorAll('img, .stage-actions').forEach(el => el.remove());
 
     const resultImg = document.createElement('img');
     resultImg.src = result.imageUrl;
@@ -650,16 +662,110 @@ generateBtn.onclick = async () => {
     `;
     stage.appendChild(actions);
 
+    lastResultUrl = result.imageUrl;
+    editPanel.classList.remove('hidden');
+    editPrompt.value = '';
+
     loadGallery();
+  } catch(err){
+    document.getElementById('genSpinner')?.remove();
+    if(!lastResultUrl){
+      stageEmpty.classList.remove('hidden');
+    }
+    genError.textContent = err.message;
+    genError.classList.remove('hidden');
+  } finally {
+    btnEl.disabled = false;
+    btnEl.textContent = defaultBtnText;
+  }
+}
+
+generateBtn.onclick = async () => {
+  genError.classList.add('hidden');
+
+  const description = document.getElementById('descriptionPrompt').value.trim();
+
+  generateBtn.disabled = true;
+  generateBtn.textContent = 'Эхлүүлж байна...';
+  stageEmpty.classList.add('hidden');
+  editPanel.classList.add('hidden');
+  lastResultUrl = null;
+  stage.querySelectorAll('img, .stage-actions').forEach(el => el.remove());
+
+  const spinner = document.createElement('div');
+  spinner.className = 'spinner';
+  spinner.id = 'genSpinner';
+  stage.appendChild(spinner);
+
+  // Оролтын зургуудад зориулсан requestId — upload-input.js энэ ID-аар GitHub дээр
+  // түр хавтас (uploads/<requestId>/) үүсгэнэ.
+  const uploadRequestId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  try {
+    // 1. Оролтын зургуудыг эхлээд synchronous function-оор GitHub руу upload хийнэ
+    // (Gemini орохгүй тул хурдан, 6MB хүртэл payload зөвшөөрдөг тул зураг багтана).
+    generateBtn.textContent = 'Зураг байршуулж байна...';
+    const uploadRes = await fetch('/.netlify/functions/upload-input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: uploadRequestId,
+        image: uploadedBase64,
+        mimeType: uploadedMime,
+        references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
+      })
+    });
+
+    if(!uploadRes.ok){
+      const errText = await uploadRes.text();
+      throw new Error('Зураг байршуулахад алдаа гарлаа: ' + (errText || uploadRes.status));
+    }
+
+    const { productUrl, referenceUrls } = await uploadRes.json();
+
+    // 2. Background function-г зөвхөн жижиг payload (URL-ууд)-тойгоор дуудна
+    await runGeneration({
+      productImageUrl: productUrl,
+      referenceImageUrls: referenceUrls,
+      description,
+      btnEl: generateBtn,
+      defaultBtnText: 'Зураг үүсгэх'
+    });
   } catch(err){
     document.getElementById('genSpinner')?.remove();
     stageEmpty.classList.remove('hidden');
     genError.textContent = err.message;
     genError.classList.remove('hidden');
-  } finally {
     generateBtn.disabled = false;
     generateBtn.textContent = 'Зураг үүсгэх';
   }
+};
+
+/* ---------- ЗАСВАРЛАХ (regenerate) ---------- */
+// Хамгийн сүүлд гарсан зургийг үндэс болгож, зөвхөн засварын тайлбарыг нэмж
+// дахин generate хийнэ — шинээр зураг upload хийх шаардлагагүй (аль хэдийн
+// GitHub дээр байгаа тул шууд URL-ыг нь дамжуулна).
+editBtn.onclick = async () => {
+  const editText = editPrompt.value.trim();
+  if(!editText){
+    genError.textContent = 'Юу засахыг хүсэж байгаагаа бичээрэй.';
+    genError.classList.remove('hidden');
+    return;
+  }
+  if(!lastResultUrl) return;
+
+  const spinner = document.createElement('div');
+  spinner.className = 'spinner';
+  spinner.id = 'genSpinner';
+  stage.appendChild(spinner);
+
+  await runGeneration({
+    productImageUrl: lastResultUrl,
+    referenceImageUrls: [],
+    description: editText,
+    btnEl: editBtn,
+    defaultBtnText: 'Дахин үүсгэх'
+  });
 };
 
 /* ---------- GALLERY (Firestore-с сүүлийн үүсгэсэн зургууд) ---------- */
