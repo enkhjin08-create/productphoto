@@ -588,6 +588,7 @@ generateBtn.onclick = async () => {
 
   try {
     let data;
+    let wasNetworkFailure = false;
     try {
       const res = await fetch('/.netlify/functions/generate', {
         method: 'POST',
@@ -603,16 +604,38 @@ generateBtn.onclick = async () => {
 
       if(!res.ok){
         const errText = await res.text();
+
+        // Netlify/AWS gateway хугацаа хэтрэхэд ихэвчлэн HTML алдааны хуудас
+        // (жишээ нь "Inactivity Timeout") эсвэл 502/503/504 статустай хариу өгдөг.
+        // Энэ нь манай generate.js өөрөө буцаасан бодит алдаа биш — зөвхөн
+        // Netlify function-руу хариу хүлээхэд удсаны шинж тул polling хийх ёстой.
+        const looksLikeGatewayTimeout =
+          errText.trim().startsWith('<') ||
+          [502, 503, 504, 520, 521, 522, 523, 524].includes(res.status);
+
+        if(looksLikeGatewayTimeout){
+          throw new TypeError('Gateway timeout: ' + errText.slice(0, 200));
+        }
+
+        // Энэ бол манай generate.js өөрөө буцаасан бодит алдаа (жишээ нь Gemini 503 JSON,
+        // буруу prompt гэх мэт) — холболт тасраагүй тул polling хийх шаардлагагүй.
         throw new Error(errText || 'Generate function алдаа гарлаа');
       }
       data = await res.json();
     } catch(fetchErr){
-      // Холболт тасарсан ч Netlify function арын талд ажлаа үргэлжлүүлж дуусгасан байж болно
-      // (жишээ нь GitHub-д зураг орсон ч хариу browser луу ирээгүй) — тиймээс алдаа шидэхийн
-      // оронд Firestore-оос шинэ зураг гарч ирэхийг тодорхой хугацаанд хүлээж шалгана.
-      generateBtn.textContent = 'Дуусгаж байна... (холболт удаж байна)';
-      data = await pollForNewImage(currentBrand, requestStartedAt);
-      if(!data) throw fetchErr;
+      // fetch өөрөө throw хийсэн (жишээ нь "Failed to fetch") бол энэ бодитоор
+      // сүлжээ тасарсан гэсэн үг — ийм үед л Netlify function арын талдаа ажлаа
+      // үргэлжлүүлж дуусгасан байж болзошгүй тул Firestore-оос polling хийж шалгана.
+      const isNetworkFailure = fetchErr instanceof TypeError;
+      if(isNetworkFailure){
+        wasNetworkFailure = true;
+        generateBtn.textContent = 'Дуусгаж байна... (холболт удаж байна)';
+        data = await pollForNewImage(currentBrand, requestStartedAt);
+      }
+      if(!data){
+        fetchErr.isNetworkFailure = wasNetworkFailure;
+        throw fetchErr;
+      }
     }
 
     // Хүлээгдэж буй хариу: { imageUrl: "https://raw.githubusercontent.com/...", id: "..." }
@@ -634,7 +657,9 @@ generateBtn.onclick = async () => {
   } catch(err){
     document.getElementById('genSpinner')?.remove();
     stageEmpty.classList.remove('hidden');
-    genError.textContent = err.message + ' — GitHub repo-гоо шалгаарай, зураг үүссэн байж магадгүй, зөвхөн энэ хуудас руу хариу ирээгүй байж болно.';
+    genError.textContent = err.isNetworkFailure
+      ? err.message + ' — GitHub repo-гоо шалгаарай, зураг үүссэн байж магадгүй, зөвхөн энэ хуудас руу хариу ирээгүй байж болно.'
+      : err.message;
     genError.classList.remove('hidden');
   } finally {
     generateBtn.disabled = false;
