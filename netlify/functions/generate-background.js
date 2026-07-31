@@ -60,6 +60,25 @@ async function commitImageToGithub({ base64Data, brand, extension }) {
   return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
 }
 
+// ---------- GitHub raw URL-аас зураг татаж base64 болгох ----------
+// Дөнгөж commit хийсэн файл raw.githubusercontent.com дээр CDN-ий улмаас
+// хэдэн секунд саатаж болзошгүй тул 3 удаа хүртэл дахин оролдоно.
+async function fetchImageAsBase64(url) {
+  let res;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await fetch(url);
+    if (res.ok) break;
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  if (!res || !res.ok) {
+    throw new Error(`Оролтын зураг татахад алдаа гарлаа: ${url}`);
+  }
+  const buffer = await res.arrayBuffer();
+  const base64 = Buffer.from(buffer).toString('base64');
+  const mimeType = res.headers.get('content-type') || 'image/jpeg';
+  return { base64, mimeType };
+}
+
 // ---------- Gemini image API дуудах ----------
 // productImage: { base64, mimeType } — өөрчлөгдөхгүй байх ёстой бүтээгдэхүүн
 // referenceImages: [{ base64, mimeType }] — зөвхөн орчин/тайлбарын жишээ, бүтээгдэхүүнийг эндээс аваагүй болно
@@ -133,13 +152,14 @@ exports.handler = async (event) => {
     return { statusCode: 405, body: 'Method not allowed' };
   }
 
-  const { requestId, image, mimeType, brand, description, references } = JSON.parse(event.body);
+  // Payload одоо зөвхөн URL агуулна (base64 биш) — background function-ий
+  // ~256KB payload хязгаарт багтаах зорилготой. Зургууд upload-input.js-аар
+  // дамжуулан GitHub-д аль хэдийн commit хийгдсэн байна.
+  const { requestId, brand, description, productImageUrl, referenceImageUrls } = JSON.parse(event.body);
 
-  if (!requestId || !image || !brand) {
-    // Энэ алдаа client рүү харагдахгүй (background function учир), гэхдээ
-    // логт үлдэнэ — Netlify Functions log-с шалгаж болно.
-    console.error('Дутуу параметр:', { requestId: !!requestId, image: !!image, brand });
-    return { statusCode: 400, body: 'requestId, image, brand шаардлагатай' };
+  if (!requestId || !brand || !productImageUrl) {
+    console.error('Дутуу параметр:', { requestId: !!requestId, brand, productImageUrl: !!productImageUrl });
+    return { statusCode: 400, body: 'requestId, brand, productImageUrl шаардлагатай' };
   }
 
   const db = getDb();
@@ -150,11 +170,18 @@ exports.handler = async (event) => {
     status: 'pending',
     brand,
     description: description || null,
-    referenceCount: (references || []).length,
+    referenceCount: (referenceImageUrls || []).length,
     createdAt: new Date().toISOString()
   });
 
   try {
+    // 2. GitHub-с оролтын зургуудыг татаж base64 болгоно
+    const productImage = await fetchImageAsBase64(productImageUrl);
+    const referenceImages = [];
+    for (const url of (referenceImageUrls || [])) {
+      referenceImages.push(await fetchImageAsBase64(url));
+    }
+
     // Ерөнхий (base) prompt — үргэлж хэрэглэгдэнэ, доор нь хэрэглэгчийн бичсэн
     // тайлбар нэмэгдэж холбогдоно.
     const BASE_PROMPT = [
@@ -165,20 +192,20 @@ exports.handler = async (event) => {
     const fullPrompt = [
       BASE_PROMPT,
       description ? `Additional direction from the user: ${description}.` : '',
-      references && references.length
+      referenceImages.length
         ? 'Reference images are attached below purely for style, background, and lighting inspiration.'
         : '',
       'High resolution, natural lighting, commercial product photography quality.'
     ].filter(Boolean).join(' ');
 
-    // 2. Gemini-с зураг үүсгэх
+    // 3. Gemini-с зураг үүсгэх
     const generated = await generateWithGemini({
-      productImage: { base64: image, mimeType: mimeType || 'image/jpeg' },
-      referenceImages: (references || []).map(r => ({ base64: r.base64, mimeType: r.mimeType || 'image/jpeg' })),
+      productImage,
+      referenceImages,
       fullPrompt
     });
 
-    // 3. GitHub-д хадгалах
+    // 4. Үр дүнгийн зургийг GitHub-д хадгалах
     const extension = (generated.mimeType || 'image/png').split('/')[1] || 'png';
     const imageUrl = await commitImageToGithub({
       base64Data: generated.base64Data,
@@ -186,7 +213,7 @@ exports.handler = async (event) => {
       extension
     });
 
-    // 4. Firestore бичлэгийг "done" болгож шинэчилнэ
+    // 5. Firestore бичлэгийг "done" болгож шинэчилнэ
     await docRef.update({
       status: 'done',
       imageUrl,
@@ -196,7 +223,7 @@ exports.handler = async (event) => {
     return { statusCode: 200, body: 'OK' };
   } catch (err) {
     console.error(err);
-    // 4b. Алдаа гарвал "error" статус бичээд, frontend талд ойлгомжтой мессеж үлдээнэ
+    // 5b. Алдаа гарвал "error" статус бичээд, frontend талд ойлгомжтой мессеж үлдээнэ
     await docRef.update({
       status: 'error',
       errorMessage: err.message || 'Тодорхойгүй алдаа',

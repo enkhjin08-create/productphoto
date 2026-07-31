@@ -583,26 +583,45 @@ generateBtn.onclick = async () => {
   const requestId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   try {
-    // Background function-г "явуулаад мартана" — client энэ дуудалтын хариуг
-    // удаан хүлээх шаардлагагүй (Netlify 202 шууд буцаана), тиймээс timeout-той
-    // холбоотой асуудал энд гарахгүй.
-    fetch('/.netlify/functions/generate-background', {
+    // 1. Оролтын зургуудыг эхлээд synchronous function-оор GitHub руу upload хийнэ
+    // (Gemini орохгүй тул хурдан, 6MB хүртэл payload зөвшөөрдөг тул зураг багтана).
+    generateBtn.textContent = 'Зураг байршуулж байна...';
+    const uploadRes = await fetch('/.netlify/functions/upload-input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         requestId,
         image: uploadedBase64,
         mimeType: uploadedMime,
+        references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
+      })
+    });
+
+    if(!uploadRes.ok){
+      const errText = await uploadRes.text();
+      throw new Error('Зураг байршуулахад алдаа гарлаа: ' + (errText || uploadRes.status));
+    }
+
+    const { productUrl, referenceUrls } = await uploadRes.json();
+
+    // 2. Background function-г зөвхөн жижиг payload (URL-ууд)-тойгоор "явуулаад мартана"
+    // — background function-ий ~256KB payload хязгаарт багтахын тулд base64 биш,
+    // GitHub URL-ыг л дамжуулна. Client энэ дуудалтын хариуг удаан хүлээх шаардлагагүй.
+    generateBtn.textContent = 'Үүсгэж байна...';
+    fetch('/.netlify/functions/generate-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId,
         brand: currentBrand,
         description,
-        references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
+        productImageUrl: productUrl,
+        referenceImageUrls: referenceUrls
       })
     }).catch(() => {
       // Энэ fetch өөрөө network дээр амжилтгүй болсон ч — доорх polling
       // үргэлжлэх тул энд алдаа шидэхгүй, зөвхөн үл тоомсорлоно.
     });
-
-    generateBtn.textContent = 'Үүсгэж байна...';
 
     // status.js-г 2 секунд тутам, дээд тал нь 3 минутын турш polling хийнэ
     const result = await pollStatus(requestId, 180000, 2000, (elapsedSec) => {

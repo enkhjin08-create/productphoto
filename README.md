@@ -4,33 +4,42 @@
 
 ## ⚠️ Netlify төлбөрийн багц — заавал уншина уу
 
-Энэ prototype **Netlify Background Functions** ашигладаг (`generate-background.js`). Энэ нь Gemini + GitHub + Firestore-ийн нийт хугацаа synchronous function-ий 10-26 секундын хязгаараас хэтэрдэг тул зайлшгүй хэрэгтэй болсон.
+Энэ prototype **Netlify Background Functions** ашигладаг (`generate-background.js`). Background Functions одоо (2026 оноос) **Free/Personal/Pro бүх credit-based багцад ажилладаг** (өмнө нь зөвхөн Pro шаарддаг байсан).
 
-**Background Functions зөвхөн Netlify-ийн Pro болон түүнээс дээш багцад ажилладаг** (Free/Starter багц дээр ажиллахгүй). Хэрэв одоо Free багц дээр байгаа бол Site configuration → Billing хэсгээс шалгаж, эсвэл упгрейд хийх шаардлагатай.
+**Чухал хязгаарлалт:** Background Functions ердөө **~256KB** хүртэлх payload л зөвшөөрдөг (synchronous function-ий 6MB-тай харьцуулбал маш бага, учир нь AWS Lambda-ийн async invoke API-ийн хязгаар). Тиймээс base64 зургийг шууд background function руу дамжуулж болохгүй — доорх 2 үе шаттай архитектур яг үүнийг шийддэг.
 
-## Урсгал
+## Урсгал (2 үе шаттай)
 
 ```
-1. Frontend: requestId үүсгээд generate-background.js рүү явуулж, ХАРИУ ХҮЛЭЭХГҮЙ
-2. Netlify: client рүү шууд 202 буцаагаад, background-д ажлаа үргэлжлүүлнэ
+1. Frontend: зургуудыг upload-input.js руу явуулж ХАРИУ ХҮЛЭЭНЭ
+   (энэ synchronous function, Gemini орохгүй тул хурдан, 6MB хүртэл payload зөвшөөрдөг)
+   → upload-input.js зургуудыг GitHub-д commit хийгээд, тэдгээрийн raw URL-г буцаана
+
+2. Frontend: requestId + GitHub URL-ууд (жижиг payload) -ыг generate-background.js руу
+   явуулж, ХАРИУ ХҮЛЭЭХГҮЙ (background function, ~256KB payload хязгаарт багтана)
+   → Netlify client рүү шууд 202 буцаагаад, background-д ажлаа үргэлжлүүлнэ
+
 3. generate-background.js:
    a. Firestore дээр requestId-аар "pending" бичлэг үүсгэнэ
-   b. Gemini image API дуудна (503 гарвал 2 удаа хүртэл дахин оролдоно)
-   c. Үр дүнг GitHub repo руу commit хийнэ
-   d. Firestore бичлэгийг "done" (imageUrl-той) эсвэл "error" болгож шинэчилнэ
+   b. GitHub URL-уудаас зургуудыг татаж base64 болгоно
+   c. Gemini image API дуудна (503 гарвал 2 удаа хүртэл дахин оролдоно)
+   d. Үр дүнг GitHub repo руу commit хийнэ
+   e. Firestore бичлэгийг "done" (imageUrl-той) эсвэл "error" болгож шинэчилнэ
+
 4. Frontend: status.js-г 2 секунд тутам polling хийж, "done"/"error" болтол хүлээнэ
 5. "done" болмогц зургийг stage дээр харуулна
 ```
 
-Энэ бүтцээр **client тал хэзээ ч timeout авахгүй** — учир нь эхний дуудалт шууд буцдаг, харин бодит ажил арын талд, хугацааны дарамтгүйгээр (15 минут хүртэл) явагдана.
+Энэ бүтцээр **client тал хэзээ ч timeout авахгүй**, мөн background function-ий payload хязгаарт ч мөргөлдөхгүй.
 
-Бүтээгдэхүүний зураг **өөрчлөгдөхгүй** байхаар prompt-д тодорхой заасан байгаа; reference зургууд зөвхөн орчин/гэрэл/mood-ийн жишээ болгож ашиглагдана, тэднээс бүтээгдэхүүн авахгүй.
+Бүтээгдэхүүний зураг **өөрчлөгдөхгүй** байхаар prompt-д тодорхой заасан байгаа; reference зургууд зөвхөн орчин/гэрэл/mood-ийн жишээ болгож ашиглагдана, тэднээс бүтээгдэхүүн авахгүй. Тайлбар (`description`) сонголтоор — хоосон орхивол ерөнхий (base) prompt дангаараа professional photoshoot зураг үүсгэнэ.
 
 ## Файлын бүтэц
 
 ```
 public/index.html                          ← Frontend (PIN gate + upload + reference зураг + тайлбар + polling)
-netlify/functions/generate-background.js   ← Background function: Gemini + GitHub + Firestore
+netlify/functions/upload-input.js          ← Synchronous: оролтын зургуудыг GitHub-д commit хийж URL буцаана
+netlify/functions/generate-background.js   ← Background: GitHub-с зураг татаж, Gemini + GitHub commit + Firestore
 netlify/functions/status.js                ← requestId-аар pending/done/error статус шалгах (frontend polling-д)
 netlify/functions/history.js               ← Firestore-с "done" статустай сүүлийн зургуудыг brand-аар шүүж авчирна
 netlify.toml                                ← Netlify тохиргоо
@@ -80,16 +89,13 @@ netlify deploy --prod
 
 эсвэл GitHub repo-г Netlify дээр холбоод автомат deploy тохируулж болно.
 
-## Хэрэв Netlify Free/Starter багц дээр байгаа бол
+## Background function payload хязгаарын тухай (шийдэгдсэн)
 
-Background Functions ажиллахгүй тул `generate-background.js` дуудахад алдаа өгнө (жишээ нь 404 эсвэл ердийн synchronous хэлбэрээр ажиллаад timeout хэвээр давтагдана). Энэ тохиолдолд сонголтууд:
-
-1. **Netlify Pro багцад шилжих** — хамгийн энгийн шийдэл, background functions шууд ажиллана
-2. **Өөр platform ашиглах** — жишээ нь Google Cloud Functions/Cloud Run (60 мин хүртэл timeout зөвшөөрдөг), эсвэл Vercel-ийн Pro/Enterprise багц дээрх Edge/Background functions
-3. **Gemini дуудалтыг өөрөө хурдасгах** — зурган хэмжээг бага болгох (аль хэдийн хийсэн, 1400px), reference зургийн тоог 1-ээр хязгаарлах, generation config-д `"candidateCount": 1` шиг зүйл нэмэх зэргээр нийт хугацааг synchronous хязгаар (10-26с)-т багтаах — гэхдээ найдвартай байдал багатай
+Анх бид зургуудыг шууд `generate-background.js`-д base64 хэлбэрээр дамжуулж байсан ч энэ нь **413 Content Too Large** алдаа өгдөг байсан — учир нь Background Functions ердөө ~256KB хүртэлх payload л зөвшөөрдөг. Одоо энэ асуудлыг `upload-input.js` (synchronous, 6MB хүртэл payload зөвшөөрдөг) нэмж, зургуудыг эхлээд GitHub-д commit хийгээд, дараа нь зөвхөн URL-ыг background function руу дамжуулах байдлаар шийдсэн.
 
 ## Дараагийн сайжруулалт боломжтой зүйлс
 
+- Оролтын зургуудыг (`uploads/<requestId>/`) generate дуусангуут GitHub-с автоматаар устгах (одоогоор repo дотор хуримтлагдана)
 - Тайлбарын түүхийг Firestore дээр хадгалж, өмнө бичсэн тайлбаруудаа дахин ашиглах (autocomplete/quick-pick)
 - Generate хийсэн зургаа шууд GitHub дээрх бүтээгдэхүүний үндсэн галерейд оруулах товч нэмэх
 - Batch горим — нэг дор олон бүтээгдэхүүний зураг upload хийж дараалан generate хийх
