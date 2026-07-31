@@ -135,11 +135,11 @@ exports.handler = async (event) => {
 
   const { requestId, image, mimeType, brand, description, references } = JSON.parse(event.body);
 
-  if (!requestId || !image || !brand || !description) {
+  if (!requestId || !image || !brand) {
     // Энэ алдаа client рүү харагдахгүй (background function учир), гэхдээ
     // логт үлдэнэ — Netlify Functions log-с шалгаж болно.
-    console.error('Дутуу параметр:', { requestId: !!requestId, image: !!image, brand, description: !!description });
-    return { statusCode: 400, body: 'requestId, image, brand, description шаардлагатай' };
+    console.error('Дутуу параметр:', { requestId: !!requestId, image: !!image, brand });
+    return { statusCode: 400, body: 'requestId, image, brand шаардлагатай' };
   }
 
   const db = getDb();
@@ -149,16 +149,22 @@ exports.handler = async (event) => {
   await docRef.set({
     status: 'pending',
     brand,
-    description,
+    description: description || null,
     referenceCount: (references || []).length,
     createdAt: new Date().toISOString()
   });
 
   try {
+    // Ерөнхий (base) prompt — үргэлж хэрэглэгдэнэ, доор нь хэрэглэгчийн бичсэн
+    // тайлбар нэмэгдэж холбогдоно.
+    const BASE_PROMPT = [
+      'Generate a high-resolution, professional product photoshoot image, similar in style and mood to the attached reference image(s) if provided, featuring the attached product image.',
+      'Keep the product itself (shape, color, logo, text, proportions) completely unchanged — only the surrounding scene, background, and lighting should change.'
+    ].join(' ');
+
     const fullPrompt = [
-      'Take this exact product and place it into a new professional product photography scene.',
-      'Keep the product itself (shape, color, logo, text, proportions) completely unchanged.',
-      `Scene / mood direction from the user: ${description}.`,
+      BASE_PROMPT,
+      description ? `Additional direction from the user: ${description}.` : '',
       references && references.length
         ? 'Reference images are attached below purely for style, background, and lighting inspiration.'
         : '',
