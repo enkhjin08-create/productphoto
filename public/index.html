@@ -536,6 +536,27 @@ function renderRefThumbs(){
   });
 }
 
+/* ---------- Хариу тасарсан үед Firestore-с шинэ зургийг хайж олох ---------- */
+// requestStartedAt-аас хойш үүссэн, тухайн brand-ийн хамгийн сүүлийн бичлэгийг
+// 3 секунд тутам, дээд тал нь 90 секундын турш шалгана.
+async function pollForNewImage(brand, requestStartedAt, maxWaitMs = 90000, intervalMs = 3000){
+  const deadline = Date.now() + maxWaitMs;
+  while(Date.now() < deadline){
+    await new Promise(r => setTimeout(r, intervalMs));
+    try {
+      const res = await fetch('/.netlify/functions/history?brand=' + brand);
+      if(res.ok){
+        const items = await res.json();
+        const found = items.find(item => item.createdAt && item.createdAt > requestStartedAt);
+        if(found) return found;
+      }
+    } catch(e){
+      // сүлжээ түр тасарсан ч polling-ыг үргэлжлүүлнэ
+    }
+  }
+  return null;
+}
+
 /* ---------- GENERATE ---------- */
 const stage = document.getElementById('stage');
 const stageEmpty = document.getElementById('stageEmpty');
@@ -561,25 +582,39 @@ generateBtn.onclick = async () => {
   spinner.id = 'genSpinner';
   stage.appendChild(spinner);
 
-  try {
-    const res = await fetch('/.netlify/functions/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        image: uploadedBase64,
-        mimeType: uploadedMime,
-        brand: currentBrand,
-        description,
-        references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
-      })
-    });
+  // Хүсэлт явуулахаас өмнөх цагийг тэмдэглэнэ — хариу тасарвал энэ цагаас хойш
+  // Firestore-д гарч ирсэн шинэ зургийг хайж олно
+  const requestStartedAt = new Date().toISOString();
 
-    if(!res.ok){
-      const errText = await res.text();
-      throw new Error(errText || 'Generate function алдаа гарлаа');
+  try {
+    let data;
+    try {
+      const res = await fetch('/.netlify/functions/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: uploadedBase64,
+          mimeType: uploadedMime,
+          brand: currentBrand,
+          description,
+          references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
+        })
+      });
+
+      if(!res.ok){
+        const errText = await res.text();
+        throw new Error(errText || 'Generate function алдаа гарлаа');
+      }
+      data = await res.json();
+    } catch(fetchErr){
+      // Холболт тасарсан ч Netlify function арын талд ажлаа үргэлжлүүлж дуусгасан байж болно
+      // (жишээ нь GitHub-д зураг орсон ч хариу browser луу ирээгүй) — тиймээс алдаа шидэхийн
+      // оронд Firestore-оос шинэ зураг гарч ирэхийг тодорхой хугацаанд хүлээж шалгана.
+      generateBtn.textContent = 'Дуусгаж байна... (холболт удаж байна)';
+      data = await pollForNewImage(currentBrand, requestStartedAt);
+      if(!data) throw fetchErr;
     }
 
-    const data = await res.json();
     // Хүлээгдэж буй хариу: { imageUrl: "https://raw.githubusercontent.com/...", id: "..." }
     document.getElementById('genSpinner')?.remove();
 
@@ -599,7 +634,7 @@ generateBtn.onclick = async () => {
   } catch(err){
     document.getElementById('genSpinner')?.remove();
     stageEmpty.classList.remove('hidden');
-    genError.textContent = err.message;
+    genError.textContent = err.message + ' — GitHub repo-гоо шалгаарай, зураг үүссэн байж магадгүй, зөвхөн энэ хуудас руу хариу ирээгүй байж болно.';
     genError.classList.remove('hidden');
   } finally {
     generateBtn.disabled = false;
