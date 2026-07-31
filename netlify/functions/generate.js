@@ -92,8 +92,8 @@ async function generateWithGemini({ productImage, referenceImages, fullPrompt })
   }
 
   const data = await res.json();
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  const imagePart = parts.find(p => p.inlineData || p.inline_data);
+  const responseParts = data?.candidates?.[0]?.content?.parts || [];
+  const imagePart = responseParts.find(p => p.inlineData || p.inline_data);
 
   if (!imagePart) {
     throw new Error('Gemini-с зураг буцаагүй байна. Prompt-оо шалгана уу.');
