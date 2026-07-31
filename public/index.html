@@ -456,16 +456,49 @@ fileInput.onchange = e => handleFile(e.target.files[0]);
 dropzone.ondragover = e => e.preventDefault();
 dropzone.ondrop = e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); };
 
+/* ---------- Зураг resize/compress хийх (Gemini рүү явуулахын өмнө) ---------- */
+// Том хэмжээтэй утасны зурагнууд Netlify function-ий хугацаа хэтрүүлэхээс сэргийлж
+// 1400px-ээс хэтрэхгүй, JPEG 0.85 чанараар шахна.
+function resizeImage(file, maxDimension = 1400, quality = 0.85){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = e => { img.src = e.target.result; };
+    reader.onerror = reject;
+    img.onload = () => {
+      let { width, height } = img;
+      if(width > maxDimension || height > maxDimension){
+        if(width > height){
+          height = Math.round(height * (maxDimension / width));
+          width = maxDimension;
+        } else {
+          width = Math.round(width * (maxDimension / height));
+          height = maxDimension;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      resolve({ dataUrl, base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
+    };
+    img.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 function handleFile(file){
   if(!file) return;
-  uploadedMime = file.type;
-  const reader = new FileReader();
-  reader.onload = e => {
-    uploadedBase64 = e.target.result.split(',')[1];
-    dropzoneContent.innerHTML = `<img src="${e.target.result}" alt="preview">`;
+  resizeImage(file).then(({ dataUrl, base64, mimeType }) => {
+    uploadedBase64 = base64;
+    uploadedMime = mimeType;
+    dropzoneContent.innerHTML = `<img src="${dataUrl}" alt="preview">`;
     generateBtn.disabled = false;
-  };
-  reader.readAsDataURL(file);
+  }).catch(() => {
+    genError.textContent = 'Зураг уншихад алдаа гарлаа, дахин оролдоно уу.';
+    genError.classList.remove('hidden');
+  });
 }
 
 /* ---------- REFERENCE IMAGES (олноор) ---------- */
@@ -482,12 +515,10 @@ refDropzone.ondrop = e => { e.preventDefault(); addReferenceFiles(e.dataTransfer
 function addReferenceFiles(fileList){
   Array.from(fileList).forEach(file => {
     if(!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = e => {
-      referenceImages.push({ base64: e.target.result.split(',')[1], mimeType: file.type, previewUrl: e.target.result });
+    resizeImage(file, 1000, 0.8).then(({ dataUrl, base64, mimeType }) => {
+      referenceImages.push({ base64, mimeType, previewUrl: dataUrl });
       renderRefThumbs();
-    };
-    reader.readAsDataURL(file);
+    });
   });
 }
 
