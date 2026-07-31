@@ -26,7 +26,11 @@ exports.handler = async (event) => {
     }
 
     const snap = await query.get();
-    const items = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const items = snap.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      // pending/error бичлэгүүдийг gallery-д харуулахгүй (хуучин бичлэгүүдэд status талбар
+      // байхгүй байж болох тул status байхгүй үед ч зөвшөөрнө — өмнөх synchronous хувилбарын үлдэгдэл)
+      .filter(item => !item.status || item.status === 'done');
 
     return {
       statusCode: 200,

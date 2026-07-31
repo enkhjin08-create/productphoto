@@ -536,22 +536,23 @@ function renderRefThumbs(){
   });
 }
 
-/* ---------- Хариу тасарсан үед Firestore-с шинэ зургийг хайж олох ---------- */
-// requestStartedAt-аас хойш үүссэн, тухайн brand-ийн хамгийн сүүлийн бичлэгийг
-// 3 секунд тутам, дээд тал нь 90 секундын турш шалгана.
-async function pollForNewImage(brand, requestStartedAt, maxWaitMs = 90000, intervalMs = 3000){
-  const deadline = Date.now() + maxWaitMs;
-  while(Date.now() < deadline){
+/* ---------- requestId-аар generate-background.js-ийн явцыг polling хийх ---------- */
+// status.js endpoint-г тогтмол шалгаж, "done" эсвэл "error" болтол хүлээнэ.
+// onTick callback-аар товч дээрх текстийг шинэчилж болно.
+async function pollStatus(requestId, maxWaitMs = 180000, intervalMs = 2000, onTick){
+  const startedAt = Date.now();
+  while(Date.now() - startedAt < maxWaitMs){
     await new Promise(r => setTimeout(r, intervalMs));
+    if(onTick) onTick(Math.round((Date.now() - startedAt) / 1000));
     try {
-      const res = await fetch('/.netlify/functions/history?brand=' + brand);
+      const res = await fetch('/.netlify/functions/status?id=' + requestId);
       if(res.ok){
-        const items = await res.json();
-        const found = items.find(item => item.createdAt && item.createdAt > requestStartedAt);
-        if(found) return found;
+        const data = await res.json();
+        if(data.status === 'done' || data.status === 'error') return data;
+        // status === 'pending' бол polling-ыг үргэлжлүүлнэ
       }
     } catch(e){
-      // сүлжээ түр тасарсан ч polling-ыг үргэлжлүүлнэ
+      // сүлжээ түр тасарсан ч polling-ыг үргэлжлүүлнэ, дараагийн tick дээр дахин оролдоно
     }
   }
   return null;
@@ -573,7 +574,7 @@ generateBtn.onclick = async () => {
   }
 
   generateBtn.disabled = true;
-  generateBtn.textContent = 'Үүсгэж байна...';
+  generateBtn.textContent = 'Эхлүүлж байна...';
   stageEmpty.classList.add('hidden');
   stage.querySelectorAll('img, .stage-actions').forEach(el => el.remove());
 
@@ -582,74 +583,56 @@ generateBtn.onclick = async () => {
   spinner.id = 'genSpinner';
   stage.appendChild(spinner);
 
-  // Хүсэлт явуулахаас өмнөх цагийг тэмдэглэнэ — хариу тасарвал энэ цагаас хойш
-  // Firestore-д гарч ирсэн шинэ зургийг хайж олно
-  const requestStartedAt = new Date().toISOString();
+  // Уникал requestId — background function энэ ID-аар Firestore бичлэг үүсгэнэ,
+  // frontend мөн энэ ID-аар status.js-г polling хийнэ.
+  const requestId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   try {
-    let data;
-    let wasNetworkFailure = false;
-    try {
-      const res = await fetch('/.netlify/functions/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: uploadedBase64,
-          mimeType: uploadedMime,
-          brand: currentBrand,
-          description,
-          references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
-        })
-      });
+    // Background function-г "явуулаад мартана" — client энэ дуудалтын хариуг
+    // удаан хүлээх шаардлагагүй (Netlify 202 шууд буцаана), тиймээс timeout-той
+    // холбоотой асуудал энд гарахгүй.
+    fetch('/.netlify/functions/generate-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId,
+        image: uploadedBase64,
+        mimeType: uploadedMime,
+        brand: currentBrand,
+        description,
+        references: referenceImages.map(r => ({ base64: r.base64, mimeType: r.mimeType }))
+      })
+    }).catch(() => {
+      // Энэ fetch өөрөө network дээр амжилтгүй болсон ч — доорх polling
+      // үргэлжлэх тул энд алдаа шидэхгүй, зөвхөн үл тоомсорлоно.
+    });
 
-      if(!res.ok){
-        const errText = await res.text();
+    generateBtn.textContent = 'Үүсгэж байна...';
 
-        // Netlify/AWS gateway хугацаа хэтрэхэд ихэвчлэн HTML алдааны хуудас
-        // (жишээ нь "Inactivity Timeout") эсвэл 502/503/504 статустай хариу өгдөг.
-        // Энэ нь манай generate.js өөрөө буцаасан бодит алдаа биш — зөвхөн
-        // Netlify function-руу хариу хүлээхэд удсаны шинж тул polling хийх ёстой.
-        const looksLikeGatewayTimeout =
-          errText.trim().startsWith('<') ||
-          [502, 503, 504, 520, 521, 522, 523, 524].includes(res.status);
+    // status.js-г 2 секунд тутам, дээд тал нь 3 минутын турш polling хийнэ
+    const result = await pollStatus(requestId, 180000, 2000, (elapsedSec) => {
+      generateBtn.textContent = `Үүсгэж байна... (${elapsedSec}с)`;
+    });
 
-        if(looksLikeGatewayTimeout){
-          throw new TypeError('Gateway timeout: ' + errText.slice(0, 200));
-        }
-
-        // Энэ бол манай generate.js өөрөө буцаасан бодит алдаа (жишээ нь Gemini 503 JSON,
-        // буруу prompt гэх мэт) — холболт тасраагүй тул polling хийх шаардлагагүй.
-        throw new Error(errText || 'Generate function алдаа гарлаа');
-      }
-      data = await res.json();
-    } catch(fetchErr){
-      // fetch өөрөө throw хийсэн (жишээ нь "Failed to fetch") бол энэ бодитоор
-      // сүлжээ тасарсан гэсэн үг — ийм үед л Netlify function арын талдаа ажлаа
-      // үргэлжлүүлж дуусгасан байж болзошгүй тул Firestore-оос polling хийж шалгана.
-      const isNetworkFailure = fetchErr instanceof TypeError;
-      if(isNetworkFailure){
-        wasNetworkFailure = true;
-        generateBtn.textContent = 'Дуусгаж байна... (холболт удаж байна)';
-        data = await pollForNewImage(currentBrand, requestStartedAt);
-      }
-      if(!data){
-        fetchErr.isNetworkFailure = wasNetworkFailure;
-        throw fetchErr;
-      }
+    if(!result){
+      throw new Error('180 секундэд хариу ирсэнгүй. GitHub repo-гоо шалгаарай — зураг үүссэн ч энэ хуудас руу мэдээлэл хоцорсон байж магадгүй.');
     }
 
-    // Хүлээгдэж буй хариу: { imageUrl: "https://raw.githubusercontent.com/...", id: "..." }
+    if(result.status === 'error'){
+      throw new Error(result.errorMessage || 'Generate явцад алдаа гарлаа');
+    }
+
     document.getElementById('genSpinner')?.remove();
 
     const resultImg = document.createElement('img');
-    resultImg.src = data.imageUrl;
+    resultImg.src = result.imageUrl;
     stage.appendChild(resultImg);
 
     const actions = document.createElement('div');
     actions.className = 'stage-actions';
     actions.innerHTML = `
-      <a href="${data.imageUrl}" download target="_blank">Татах</a>
-      <button onclick="navigator.clipboard.writeText('${data.imageUrl}')">Линк хуулах</button>
+      <a href="${result.imageUrl}" download target="_blank">Татах</a>
+      <button onclick="navigator.clipboard.writeText('${result.imageUrl}')">Линк хуулах</button>
     `;
     stage.appendChild(actions);
 
@@ -657,9 +640,7 @@ generateBtn.onclick = async () => {
   } catch(err){
     document.getElementById('genSpinner')?.remove();
     stageEmpty.classList.remove('hidden');
-    genError.textContent = err.isNetworkFailure
-      ? err.message + ' — GitHub repo-гоо шалгаарай, зураг үүссэн байж магадгүй, зөвхөн энэ хуудас руу хариу ирээгүй байж болно.'
-      : err.message;
+    genError.textContent = err.message;
     genError.classList.remove('hidden');
   } finally {
     generateBtn.disabled = false;

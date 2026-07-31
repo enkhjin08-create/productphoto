@@ -2,27 +2,39 @@
 
 Хувийн бизнес хэрэглээнд зориулсан — ZuvkhunTuund / Meowie / CuteCups брэндүүдийн бүтээгдэхүүний зургийг Gemini-ээр шинэ photoshoot scene рүү оруулах tool.
 
+## ⚠️ Netlify төлбөрийн багц — заавал уншина уу
+
+Энэ prototype **Netlify Background Functions** ашигладаг (`generate-background.js`). Энэ нь Gemini + GitHub + Firestore-ийн нийт хугацаа synchronous function-ий 10-26 секундын хязгаараас хэтэрдэг тул зайлшгүй хэрэгтэй болсон.
+
+**Background Functions зөвхөн Netlify-ийн Pro болон түүнээс дээш багцад ажилладаг** (Free/Starter багц дээр ажиллахгүй). Хэрэв одоо Free багц дээр байгаа бол Site configuration → Billing хэсгээс шалгаж, эсвэл упгрейд хийх шаардлагатай.
+
 ## Урсгал
 
 ```
-Upload бүтээгдэхүүний зураг + reference зургууд (олноор) + тайлбар бичих
-  → Netlify Function (netlify/functions/generate.js)
-  → Gemini 2.5 Flash Image API руу бүтээгдэхүүний зураг + reference зургууд + тайлбарыг хамт дамжуулна
-  → Үр дүнгийн зургийг GitHub repo руу commit хийнэ
-  → Firestore-д metadata (brand, description, github url) хадгална
-  → Frontend дээр GitHub raw URL-аар харуулна
+1. Frontend: requestId үүсгээд generate-background.js рүү явуулж, ХАРИУ ХҮЛЭЭХГҮЙ
+2. Netlify: client рүү шууд 202 буцаагаад, background-д ажлаа үргэлжлүүлнэ
+3. generate-background.js:
+   a. Firestore дээр requestId-аар "pending" бичлэг үүсгэнэ
+   b. Gemini image API дуудна (503 гарвал 2 удаа хүртэл дахин оролдоно)
+   c. Үр дүнг GitHub repo руу commit хийнэ
+   d. Firestore бичлэгийг "done" (imageUrl-той) эсвэл "error" болгож шинэчилнэ
+4. Frontend: status.js-г 2 секунд тутам polling хийж, "done"/"error" болтол хүлээнэ
+5. "done" болмогц зургийг stage дээр харуулна
 ```
+
+Энэ бүтцээр **client тал хэзээ ч timeout авахгүй** — учир нь эхний дуудалт шууд буцдаг, харин бодит ажил арын талд, хугацааны дарамтгүйгээр (15 минут хүртэл) явагдана.
 
 Бүтээгдэхүүний зураг **өөрчлөгдөхгүй** байхаар prompt-д тодорхой заасан байгаа; reference зургууд зөвхөн орчин/гэрэл/mood-ийн жишээ болгож ашиглагдана, тэднээс бүтээгдэхүүн авахгүй.
 
 ## Файлын бүтэц
 
 ```
-public/index.html              ← Frontend (PIN gate + upload + reference зураг + тайлбар + stage)
-netlify/functions/generate.js  ← Gemini дуудаж, GitHub-д commit хийж, Firestore-д лог хийнэ
-netlify/functions/history.js   ← Firestore-с сүүлийн зургуудыг brand-аар шүүж авчирна
-netlify.toml                   ← Netlify тохиргоо
-package.json                   ← firebase-admin dependency
+public/index.html                          ← Frontend (PIN gate + upload + reference зураг + тайлбар + polling)
+netlify/functions/generate-background.js   ← Background function: Gemini + GitHub + Firestore
+netlify/functions/status.js                ← requestId-аар pending/done/error статус шалгах (frontend polling-д)
+netlify/functions/history.js               ← Firestore-с "done" статустай сүүлийн зургуудыг brand-аар шүүж авчирна
+netlify.toml                                ← Netlify тохиргоо
+package.json                                ← firebase-admin dependency
 ```
 
 ## Тохируулах алхмууд
@@ -67,6 +79,14 @@ netlify deploy --prod
 ```
 
 эсвэл GitHub repo-г Netlify дээр холбоод автомат deploy тохируулж болно.
+
+## Хэрэв Netlify Free/Starter багц дээр байгаа бол
+
+Background Functions ажиллахгүй тул `generate-background.js` дуудахад алдаа өгнө (жишээ нь 404 эсвэл ердийн synchronous хэлбэрээр ажиллаад timeout хэвээр давтагдана). Энэ тохиолдолд сонголтууд:
+
+1. **Netlify Pro багцад шилжих** — хамгийн энгийн шийдэл, background functions шууд ажиллана
+2. **Өөр platform ашиглах** — жишээ нь Google Cloud Functions/Cloud Run (60 мин хүртэл timeout зөвшөөрдөг), эсвэл Vercel-ийн Pro/Enterprise багц дээрх Edge/Background functions
+3. **Gemini дуудалтыг өөрөө хурдасгах** — зурган хэмжээг бага болгох (аль хэдийн хийсэн, 1400px), reference зургийн тоог 1-ээр хязгаарлах, generation config-д `"candidateCount": 1` шиг зүйл нэмэх зэргээр нийт хугацааг synchronous хязгаар (10-26с)-т багтаах — гэхдээ найдвартай байдал багатай
 
 ## Дараагийн сайжруулалт боломжтой зүйлс
 
