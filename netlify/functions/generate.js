@@ -63,19 +63,29 @@ async function generateWithGemini({ productImage, referenceImages, fullPrompt })
   const apiKey = process.env.GEMINI_API_KEY;
   const model = 'gemini-2.5-flash-image';
 
-  const parts = [{ text: fullPrompt }];
+  // Зургуудыг эхэнд, тодорхой шошготойгоор өгч, тушаалыг хамгийн адагт
+  // тавьснаар загвар "оролтын зургийг шууд буцаах" магадлал багасна.
+  const parts = [];
 
-  parts.push({ text: 'Product image (keep this exact product unchanged):' });
+  parts.push({ text: 'IMAGE 1 — THE PRODUCT (this exact product must appear in the final output, unchanged in shape/color/logo/text):' });
   parts.push({ inline_data: { mime_type: productImage.mimeType, data: productImage.base64 } });
 
   if (referenceImages && referenceImages.length) {
-    parts.push({ text: 'Reference / mood images (use only for style, background, lighting inspiration — do not copy any product from these):' });
-    referenceImages.forEach(ref => {
+    referenceImages.forEach((ref, i) => {
+      parts.push({ text: `IMAGE ${i + 2} — STYLE REFERENCE ONLY (copy the mood/background/lighting from this, do NOT copy any object or product shown in it):` });
       parts.push({ inline_data: { mime_type: ref.mimeType, data: ref.base64 } });
     });
   }
 
-  const res = await fetch(
+  parts.push({
+    text: [
+      fullPrompt,
+      'You must generate a brand-new composed image — never return IMAGE 1 or any reference image unchanged or uncropped.',
+      'The output must clearly show IMAGE 1\'s product placed inside a newly rendered scene.'
+    ].join(' ')
+  });
+
+  const callGemini = () => fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: 'POST',
@@ -85,6 +95,15 @@ async function generateWithGemini({ productImage, referenceImages, fullPrompt })
       })
     }
   );
+
+  let res = await callGemini();
+
+  // Gemini "high demand / UNAVAILABLE" (503) ихэвчлэн түр зуурын тул нэг удаа
+  // богино хугацаа хүлээгээд дахин оролдоно (нийт function timeout-д багтаах үүднээс зөвхөн 1 удаа)
+  if (res.status === 503) {
+    await new Promise(r => setTimeout(r, 2000));
+    res = await callGemini();
+  }
 
   if (!res.ok) {
     const errText = await res.text();
