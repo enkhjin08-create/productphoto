@@ -377,8 +377,8 @@
       </div>
 
       <div class="field">
-        <label>Тайлбар</label>
-        <textarea id="descriptionPrompt" placeholder="жишээ: reference зурган дээрхтэй төстэй мод дэвсгэртэй, өглөөний зөөлөн гэрэлтэй, дулаан аяга..." style="min-height:110px;"></textarea>
+        <label>Тайлбар (сонголтоор)</label>
+        <textarea id="descriptionPrompt" placeholder="жишээ: reference зурган дээрхтэй төстэй мод дэвсгэртэй, өглөөний зөөлөн гэрэлтэй, дулаан аяга... (хоосон орхивол ерөнхий professional photoshoot байдлаар үүснэ)" style="min-height:110px;"></textarea>
       </div>
 
       <button class="primary" id="generateBtn" disabled>Зураг үүсгэх</button>
@@ -567,11 +567,6 @@ generateBtn.onclick = async () => {
   genError.classList.add('hidden');
 
   const description = document.getElementById('descriptionPrompt').value.trim();
-  if(!description){
-    genError.textContent = 'Тайлбар бичнэ үү — ямар орчин, ямар мэдрэмж хүсэж байгаагаа тодорхойлно.';
-    genError.classList.remove('hidden');
-    return;
-  }
 
   generateBtn.disabled = true;
   generateBtn.textContent = 'Эхлүүлж байна...';
