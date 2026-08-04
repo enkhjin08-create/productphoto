@@ -95,7 +95,7 @@ async function generateWithGemini({ productImage, referenceImages, fullPrompt })
 
   if (referenceImages && referenceImages.length) {
     referenceImages.forEach((ref, i) => {
-      parts.push({ text: `IMAGE ${i + 2} — STYLE REFERENCE ONLY (copy the mood/background/lighting from this, do NOT copy any object or product shown in it):` });
+      parts.push({ text: `IMAGE ${i + 2} — STYLE REFERENCE ONLY. Look at this only to understand the mood, color palette, lighting quality, and composition style. Do NOT use this image as a base canvas or background plate. Do NOT paste, overlay, or composite the product onto this exact photo. Do NOT reuse its exact background, framing, or any of its other objects/props pixel-for-pixel. You must imagine and render a completely NEW photograph in a similar style — not edit or build on top of this one:` });
       parts.push({ inline_data: { mime_type: ref.mimeType, data: ref.base64 } });
     });
   }
@@ -104,8 +104,11 @@ async function generateWithGemini({ productImage, referenceImages, fullPrompt })
     text: [
       fullPrompt,
       'You must generate a brand-new composed image — never return IMAGE 1 or any reference image unchanged or uncropped.',
-      'The output must clearly show IMAGE 1\'s product placed inside a newly rendered scene, as one single believable photograph with unified lighting, shadows, and styling — not a cut-and-paste collage of separate objects.'
-    ].join(' ')
+      'The output must clearly show IMAGE 1\'s product placed inside a newly rendered scene, as one single believable photograph with unified lighting, shadows, and styling — not a cut-and-paste collage of separate objects.',
+      referenceImages && referenceImages.length
+        ? 'IMPORTANT: the output must NOT be the reference photo with the product pasted on top of it. Treat the reference purely as a mood board — render an entirely original scene that merely shares its style, not its literal pixels, background, or props.'
+        : ''
+    ].filter(Boolean).join(' ')
   });
 
   const callGemini = () => fetch(
@@ -188,6 +191,7 @@ exports.handler = async (event) => {
       'Generate a single, cohesive, high-resolution professional product photoshoot image, similar in style and mood to the attached reference image(s) if provided, featuring the attached product image.',
       'Keep the product itself (shape, color, logo, text, proportions) completely unchanged — only the surrounding scene, background, and lighting should change.',
       'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, never like a collage of separately-photographed objects pasted together.',
+      'Do NOT use any reference image as the base photo/canvas and place the product on top of it — that produces an obviously fake, pasted-on look. Instead, render a completely new scene from scratch that only borrows the mood, palette, and lighting style of the reference.',
       'Every element in the frame must share the exact same light source, direction, color temperature, and shadow softness.',
       'Objects must rest naturally on surfaces with physically accurate contact shadows and realistic scale relative to each other — nothing should look flat, cut-out, or floating.',
       'Arrange the scene like an experienced stylist would: intentional, balanced, uncluttered composition with clear visual hierarchy around the product — not a random pile of unrelated items.',
