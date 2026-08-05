@@ -4,6 +4,7 @@
   "private": true,
   "description": "Хувийн бизнес хэрэглээний product photoshoot generator (ZuvkhunTuund / Meowie / CuteCups)",
   "dependencies": {
-    "firebase-admin": "^12.1.0"
+    "firebase-admin": "^12.1.0",
+    "sharp": "^0.33.5"
   }
 }

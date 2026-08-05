@@ -611,7 +611,7 @@ let lastResultUrl = null; // хамгийн сүүлд амжилттай үүс
 
 // Нийтлэг generate+polling logic — эхний generate болон дараагийн "засварлах"
 // (regenerate) хоёулаа энийг дуудна.
-async function runGeneration({ productImageUrl, referenceImageUrls, description, btnEl, defaultBtnText }){
+async function runGeneration({ productImageUrl, referenceImageUrls, description, btnEl, defaultBtnText, mode }){
   genError.classList.add('hidden');
   btnEl.disabled = true;
 
@@ -627,7 +627,8 @@ async function runGeneration({ productImageUrl, referenceImageUrls, description,
         brand: currentBrand,
         description,
         productImageUrl,
-        referenceImageUrls
+        referenceImageUrls,
+        mode
       })
     }).catch(() => {
       // Энэ fetch өөрөө network дээр амжилтгүй болсон ч — доорх polling
@@ -729,7 +730,8 @@ generateBtn.onclick = async () => {
       referenceImageUrls: referenceUrls,
       description,
       btnEl: generateBtn,
-      defaultBtnText: 'Зураг үүсгэх'
+      defaultBtnText: 'Зураг үүсгэх',
+      mode: 'compose'
     });
   } catch(err){
     document.getElementById('genSpinner')?.remove();
@@ -764,7 +766,8 @@ editBtn.onclick = async () => {
     referenceImageUrls: [],
     description: editText,
     btnEl: editBtn,
-    defaultBtnText: 'Дахин үүсгэх'
+    defaultBtnText: 'Дахин үүсгэх',
+    mode: 'edit'
   });
 };
 

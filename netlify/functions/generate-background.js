@@ -124,7 +124,143 @@ async function fetchImageAsBase64(url) {
   return { base64, mimeType };
 }
 
-// ---------- Gemini image API дуудах ----------
+// ---------- Бүтээгдэхүүнийг дэвсгэрээс нь цэвэрхэн тайрч авах (remove.bg) ----------
+// ЯАГААД: Photoroom зэрэг мэргэжлийн tool-ууд бүтээгдэхүүний pixel-ийг ХЭЗЭЭ Ч
+// дахин зурдаггүй — зөвхөн нарийн segmentation-оор тайрч аваад шинэ дэвсгэр дээр
+// байрлуулдаг. Ингэснээр лого, текст, нарийн ширхэг 100% хадгалагдана. Манай
+// өмнөх (Gemini-ээр бүхэлд нь дахин зурах) арга нарийвчлал алддаг байсан тул
+// одоо ижил зарчмаар ажиллана.
+async function removeBackground(base64, mimeType) {
+  const apiKey = process.env.REMOVEBG_API_KEY;
+  if (!apiKey) {
+    throw new Error('REMOVEBG_API_KEY тохируулагдаагүй байна (Netlify env var).');
+  }
+
+  const res = await fetch('https://api.remove.bg/v1.0/removebg', {
+    method: 'POST',
+    headers: {
+      'X-Api-Key': apiKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      image_file_b64: base64,
+      size: 'auto',
+      format: 'png'
+    })
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`remove.bg алдаа: ${errText}`);
+  }
+
+  const buffer = await res.arrayBuffer();
+  return { base64: Buffer.from(buffer).toString('base64'), mimeType: 'image/png' };
+}
+
+// ---------- Зөвхөн дэвсгэр (бүтээгдэхүүнгүй) зураг үүсгэх ----------
+// Бүтээгдэхүүн энд огт оролцохгүй тул Gemini reference-ийн mood-г дуурайхдаа
+// бодит бүтээгдэхүүнтэй "тэмцэх" шаардлагагүй — зөвхөн орчин, гэрэлтүүлэг,
+// өнгийг цэвэр дүрсэлнэ.
+async function generateBackgroundScene(fullPrompt) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  const model = 'gemini-2.5-flash-image';
+
+  const parts = [{
+    text: [
+      fullPrompt,
+      'Generate ONLY the empty scene/background for this photoshoot — do NOT include any product, person, hand, or object that would be the main subject.',
+      'Leave a clear, uncluttered open area (a surface, floor, or open space) roughly in the lower-center of the frame, where a product will be composited in afterward.',
+      'Square 1:1 aspect ratio, high resolution, photographically realistic (not illustration/render style).'
+    ].join(' ')
+  }];
+
+  const callGemini = () => fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts }] })
+    }
+  );
+
+  let res = await callGemini();
+  let attempt = 0;
+  while (res.status === 503 && attempt < 2) {
+    attempt++;
+    await new Promise(r => setTimeout(r, attempt * 4000));
+    res = await callGemini();
+  }
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini API алдаа (дэвсгэр): ${errText}`);
+  }
+
+  const data = await res.json();
+  const responseParts = data?.candidates?.[0]?.content?.parts || [];
+  const imagePart = responseParts.find(p => p.inlineData || p.inline_data);
+  if (!imagePart) {
+    throw new Error('Gemini дэвсгэр зураг буцаагүй байна.');
+  }
+  const inline = imagePart.inlineData || imagePart.inline_data;
+  return { base64: inline.data, mimeType: inline.mimeType || inline.mime_type };
+}
+
+// ---------- Бүтээгдэхүүний cutout-ийг дэвсгэр дээр байрлуулж, сүүдэртэй нэгтгэх ----------
+// sharp ашиглан deterministic (тогтмол, найдвартай) байдлаар composite хийнэ —
+// AI биш, тиймээс бүтээгдэхүүний pixel 100% хадгалагдана.
+async function compositeProductOntoBackground({ cutoutBase64, backgroundBase64 }) {
+  const sharp = require('sharp');
+  const CANVAS_SIZE = 1600;
+
+  const cutoutBuffer = Buffer.from(cutoutBase64, 'base64');
+  const backgroundBuffer = Buffer.from(backgroundBase64, 'base64');
+
+  // Дэвсгэрийг канвасын хэмжээнд бүрэн дүүргэж тааруулна
+  const background = await sharp(backgroundBuffer)
+    .resize(CANVAS_SIZE, CANVAS_SIZE, { fit: 'cover' })
+    .toBuffer();
+
+  // Бүтээгдэхүүнийг канвасын ойролцоогоор 55% өргөнд багтаана
+  const targetWidth = Math.round(CANVAS_SIZE * 0.55);
+  const cutoutResizer = sharp(cutoutBuffer).resize({ width: targetWidth, withoutEnlargement: true });
+  const cutoutMeta = await cutoutResizer.metadata();
+  const cutoutFinalBuffer = await cutoutResizer.toBuffer();
+  const cutoutW = cutoutMeta.width || targetWidth;
+  const cutoutH = cutoutMeta.height || targetWidth;
+
+  const left = Math.round((CANVAS_SIZE - cutoutW) / 2);
+  const top = Math.round(CANVAS_SIZE * 0.62 - cutoutH / 2); // арай доод хэсэгт "hero" байрлал
+
+  // Зөөлөн бүдгэрсэн эллипс сүүдэр (SVG)
+  const shadowWidth = Math.round(cutoutW * 0.8);
+  const shadowHeight = Math.round(cutoutW * 0.18);
+  const shadowSvg = `<svg width="${shadowWidth}" height="${shadowHeight}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="g" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="black" stop-opacity="0.38"/>
+        <stop offset="100%" stop-color="black" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <ellipse cx="${shadowWidth / 2}" cy="${shadowHeight / 2}" rx="${shadowWidth / 2}" ry="${shadowHeight / 2}" fill="url(#g)"/>
+  </svg>`;
+  const shadowBuffer = await sharp(Buffer.from(shadowSvg)).png().toBuffer();
+  const shadowLeft = Math.round((CANVAS_SIZE - shadowWidth) / 2);
+  const shadowTop = Math.round(top + cutoutH - shadowHeight * 0.55);
+
+  const finalBuffer = await sharp(background)
+    .composite([
+      { input: shadowBuffer, left: shadowLeft, top: shadowTop },
+      { input: cutoutFinalBuffer, left, top }
+    ])
+    .png()
+    .toBuffer();
+
+  return finalBuffer.toString('base64');
+}
+
+// ---------- Gemini image API дуудах (ЗАСВАР/EDIT горимд ашиглагдана) ----------
 // productImage: { base64, mimeType } — өөрчлөгдөхгүй байх ёстой бүтээгдэхүүн
 // referenceStyleText: reference зургуудаас урьдчилан гаргуулсан текст тайлбар (pixel биш!)
 async function generateWithGemini({ productImage, referenceStyleText, fullPrompt }) {
@@ -135,15 +271,14 @@ async function generateWithGemini({ productImage, referenceStyleText, fullPrompt
   // pixel-ийг энд огт дамжуулахгүй тул загвар түүнийг хуулбарлах боломжгүй.
   const parts = [];
 
-  parts.push({ text: 'THE PRODUCT — its shape, logo, printed text, and true colors must stay 100% recognizable, but you MUST re-light it, re-grade its color/contrast, and render it from a natural camera angle so it photographically belongs in the new scene (see integration rules below):' });
+  parts.push({ text: 'THE EXISTING PHOTO — its shape, logo, printed text, and true colors of the product must stay 100% recognizable while you apply the requested edit:' });
   parts.push({ inline_data: { mime_type: productImage.mimeType, data: productImage.base64 } });
 
   parts.push({
     text: [
       fullPrompt,
-      referenceStyleText ? `Style/mood direction (derived from a reference photo, described in words only — no pixels from that photo are provided, so you must imagine and render a completely new scene): ${referenceStyleText}` : '',
-      'You must generate a brand-new composed image — never return the product photo unchanged or uncropped.',
-      'The output must clearly show the product placed inside a newly rendered scene, as one single believable photograph with unified lighting, shadows, and styling — not a cut-and-paste collage of separate objects.'
+      'Apply the requested edit while keeping the photo as ONE cohesive, believable photograph with unified lighting, shadows, and styling — not a collage.',
+      'Never return the input photo completely unchanged if an edit was requested.'
     ].filter(Boolean).join(' ')
   });
 
@@ -194,7 +329,10 @@ exports.handler = async (event) => {
   // Payload одоо зөвхөн URL агуулна (base64 биш) — background function-ий
   // ~256KB payload хязгаарт багтаах зорилготой. Зургууд upload-input.js-аар
   // дамжуулан GitHub-д аль хэдийн commit хийгдсэн байна.
-  const { requestId, brand, description, productImageUrl, referenceImageUrls } = JSON.parse(event.body);
+  // mode: 'compose' (анхны generate — segmentation+composite) | 'edit' (Дахин
+  // үүсгэх/засварлах — бүтэн зургийг Gemini-ээр шууд edit хийнэ)
+  const { requestId, brand, description, productImageUrl, referenceImageUrls, mode } = JSON.parse(event.body);
+  const effectiveMode = mode === 'edit' ? 'edit' : 'compose';
 
   if (!requestId || !brand || !productImageUrl) {
     console.error('Дутуу параметр:', { requestId: !!requestId, brand, productImageUrl: !!productImageUrl });
@@ -209,63 +347,83 @@ exports.handler = async (event) => {
     status: 'pending',
     brand,
     description: description || null,
+    mode: effectiveMode,
     referenceCount: (referenceImageUrls || []).length,
     createdAt: new Date().toISOString()
   });
 
   try {
-    // 2. GitHub-с оролтын зургуудыг татаж base64 болгоно
-    const productImage = await fetchImageAsBase64(productImageUrl);
-    const referenceImages = [];
-    for (const url of (referenceImageUrls || [])) {
-      referenceImages.push(await fetchImageAsBase64(url));
+    let finalBase64;
+    let finalExtension;
+
+    if (effectiveMode === 'compose') {
+      // ---------- COMPOSE ГОРИМ: segmentation + дэвсгэр generate + composite ----------
+      const productImage = await fetchImageAsBase64(productImageUrl);
+      const referenceImages = [];
+      for (const url of (referenceImageUrls || [])) {
+        referenceImages.push(await fetchImageAsBase64(url));
+      }
+
+      let referenceStyleText = null;
+      if (referenceImages.length) {
+        referenceStyleText = await describeReferenceStyle(referenceImages);
+      }
+
+      const BASE_PROMPT = [
+        'Generate a single, cohesive, high-resolution professional product photoshoot BACKGROUND SCENE.',
+        'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, with a clear, intentional, uncluttered composition — not a random pile of unrelated items.',
+        'Arrange the scene like an experienced stylist would: balanced composition with clear visual hierarchy, leaving open space in the lower-center for a product to be placed afterward.',
+        'If props are present, keep the palette and materials harmonious; when in doubt, use fewer, more deliberate props rather than many mismatched ones.',
+        'PREMIUM COLOR GRADING & FINISH: apply polished, high-end commercial color grading — rich but controlled saturation, deep confident contrast (not flat or washed out), clean true blacks and bright-but-not-blown highlights, a subtle cinematic tone curve like a big-budget ad campaign.',
+        'Avoid a dull, flat, snapshot, or amateur look at all costs — this must feel like it belongs in a premium brand advertisement.'
+      ].join(' ');
+
+      const fullPrompt = [
+        BASE_PROMPT,
+        description ? `Additional direction from the user: ${description}.` : '',
+        referenceStyleText ? `Style/mood direction (described in words only): ${referenceStyleText}` : '',
+        'High resolution, natural lighting, commercial product photography quality, shot on a full-frame camera with shallow depth of field, premium advertising color grade.'
+      ].filter(Boolean).join(' ');
+
+      // 2. Бүтээгдэхүүнийг дэвсгэрээс нь цэвэрхэн тайрч авах (pixel 100% хадгалагдана)
+      const cutout = await removeBackground(productImage.base64, productImage.mimeType);
+
+      // 3. Зөвхөн дэвсгэр зураг Gemini-ээр үүсгэх (бүтээгдэхүүнгүй)
+      const background = await generateBackgroundScene(fullPrompt);
+
+      // 4. Хоёуланг нь sharp-аар deterministic байдлаар нэгтгэх
+      finalBase64 = await compositeProductOntoBackground({
+        cutoutBase64: cutout.base64,
+        backgroundBase64: background.base64
+      });
+      finalExtension = 'png';
+    } else {
+      // ---------- EDIT ГОРИМ: өмнөх бүтэн зургийг Gemini-ээр шууд засварлах ----------
+      const productImage = await fetchImageAsBase64(productImageUrl);
+
+      const fullPrompt = [
+        'Apply the following edit to this existing product photoshoot image while keeping the product itself fully recognizable (shape, logo, text, proportions unchanged):',
+        description ? description : 'Improve the overall lighting and color grading.',
+        'The result must remain ONE cohesive, believable photograph — not a collage.'
+      ].join(' ');
+
+      const generated = await generateWithGemini({
+        productImage,
+        referenceStyleText: null,
+        fullPrompt
+      });
+      finalBase64 = generated.base64Data;
+      finalExtension = (generated.mimeType || 'image/png').split('/')[1] || 'png';
     }
 
-    // Reference зургууд байвал, тэдгээрийг эхлээд ЗӨВХӨН текст тайлбар болгож
-    // хувиргана (яагаад гэдгийг дээрх describeReferenceStyle-ийн тайлбараас үзнэ үү).
-    let referenceStyleText = null;
-    if (referenceImages.length) {
-      referenceStyleText = await describeReferenceStyle(referenceImages);
-    }
-
-    // Ерөнхий (base) prompt — үргэлж хэрэглэгдэнэ, доор нь хэрэглэгчийн бичсэн
-    // тайлбар нэмэгдэж холбогдоно.
-    const BASE_PROMPT = [
-      'Generate a single, cohesive, high-resolution professional product photoshoot image featuring the attached product image.',
-      'PRODUCT IDENTITY (must stay 100% recognizable): keep the product\'s shape, proportions, logo, printed text, and true colors exactly as shown — never redesign, restyle, or alter the product itself.',
-      'PHOTOGRAPHIC INTEGRATION (this is required, not optional): the product must be re-rendered as if it were physically photographed inside the new scene — re-light it to match the new scene\'s light source direction, intensity, and color temperature; add matching highlights, reflections, and soft shadows/contact shadows where it touches any surface; apply the same subtle color grading (white balance, warmth, contrast) as the rest of the photo so the product does not look color-mismatched or "pasted on".',
-      'PERSPECTIVE: render the product from a camera angle and distance that feels natural for this specific scene and composition — do not simply reuse the exact angle/crop from the original product photo if it would look inconsistent with how the scene is framed; the product\'s implied camera position must match the rest of the photograph.',
-      'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, never like a collage of separately-photographed objects pasted together, and never like a flat sticker overlaid on a background.',
-      'Every element in the frame must share the exact same light source, direction, color temperature, and shadow softness.',
-      'Objects must rest naturally on surfaces with physically accurate contact shadows and realistic scale relative to each other — nothing should look flat, cut-out, or floating.',
-      'Arrange the scene like an experienced stylist would: intentional, balanced, uncluttered composition with clear visual hierarchy around the product — not a random pile of unrelated items.',
-      'If multiple props are present, keep the palette and materials harmonious with the product and with each other; when in doubt, use fewer, more deliberate props rather than many mismatched ones.',
-      'PREMIUM COLOR GRADING & FINISH: apply polished, high-end commercial color grading — rich but controlled saturation, deep confident contrast (not flat or washed out), clean true blacks and bright-but-not-blown highlights, a subtle cinematic tone curve like a big-budget ad campaign.',
-      'Avoid a dull, flat, snapshot, or amateur look at all costs — this must feel like it belongs in a premium brand advertisement, with crisp micro-contrast/sharpness on the product and a slightly glossy, expensive finish overall.'
-    ].join(' ');
-
-    const fullPrompt = [
-      BASE_PROMPT,
-      description ? `Additional direction from the user: ${description}.` : '',
-      'High resolution, natural lighting, commercial product photography quality, shot on a full-frame camera with shallow depth of field, premium advertising color grade.'
-    ].filter(Boolean).join(' ');
-
-    // 3. Gemini-с зураг үүсгэх (reference-ийн pixel биш, зөвхөн текст тайлбар дамжуулна)
-    const generated = await generateWithGemini({
-      productImage,
-      referenceStyleText,
-      fullPrompt
-    });
-
-    // 4. Үр дүнгийн зургийг GitHub-д хадгалах
-    const extension = (generated.mimeType || 'image/png').split('/')[1] || 'png';
+    // 5. Үр дүнгийн зургийг GitHub-д хадгалах
     const imageUrl = await commitImageToGithub({
-      base64Data: generated.base64Data,
+      base64Data: finalBase64,
       brand,
-      extension
+      extension: finalExtension
     });
 
-    // 5. Firestore бичлэгийг "done" болгож шинэчилнэ
+    // 6. Firestore бичлэгийг "done" болгож шинэчилнэ
     await docRef.update({
       status: 'done',
       imageUrl,
@@ -275,7 +433,7 @@ exports.handler = async (event) => {
     return { statusCode: 200, body: 'OK' };
   } catch (err) {
     console.error(err);
-    // 5b. Алдаа гарвал "error" статус бичээд, frontend талд ойлгомжтой мессеж үлдээнэ
+    // 6b. Алдаа гарвал "error" статус бичээд, frontend талд ойлгомжтой мессеж үлдээнэ
     await docRef.update({
       status: 'error',
       errorMessage: err.message || 'Тодорхойгүй алдаа',

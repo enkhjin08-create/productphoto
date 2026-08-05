@@ -4,3 +4,7 @@
 
 [functions]
   node_bundler = "esbuild"
+  # sharp нь native binary (platform-specific) агуулдаг тул esbuild үүнийг
+  # bundle хийхийг оролдвол эвдэрдэг — тиймээс external болгож, Netlify build
+  # үедээ npm install-аар зөв (linux-x64) binary-г шууд оруулна.
+  external_node_modules = ["sharp"]
