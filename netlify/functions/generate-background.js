@@ -239,13 +239,15 @@ exports.handler = async (event) => {
       'Every element in the frame must share the exact same light source, direction, color temperature, and shadow softness.',
       'Objects must rest naturally on surfaces with physically accurate contact shadows and realistic scale relative to each other — nothing should look flat, cut-out, or floating.',
       'Arrange the scene like an experienced stylist would: intentional, balanced, uncluttered composition with clear visual hierarchy around the product — not a random pile of unrelated items.',
-      'If multiple props are present, keep the palette and materials harmonious with the product and with each other; when in doubt, use fewer, more deliberate props rather than many mismatched ones.'
+      'If multiple props are present, keep the palette and materials harmonious with the product and with each other; when in doubt, use fewer, more deliberate props rather than many mismatched ones.',
+      'PREMIUM COLOR GRADING & FINISH: apply polished, high-end commercial color grading — rich but controlled saturation, deep confident contrast (not flat or washed out), clean true blacks and bright-but-not-blown highlights, a subtle cinematic tone curve like a big-budget ad campaign.',
+      'Avoid a dull, flat, snapshot, or amateur look at all costs — this must feel like it belongs in a premium brand advertisement, with crisp micro-contrast/sharpness on the product and a slightly glossy, expensive finish overall.'
     ].join(' ');
 
     const fullPrompt = [
       BASE_PROMPT,
       description ? `Additional direction from the user: ${description}.` : '',
-      'High resolution, natural lighting, commercial product photography quality, shot on a full-frame camera with shallow depth of field.'
+      'High resolution, natural lighting, commercial product photography quality, shot on a full-frame camera with shallow depth of field, premium advertising color grade.'
     ].filter(Boolean).join(' ');
 
     // 3. Gemini-с зураг үүсгэх (reference-ийн pixel биш, зөвхөн текст тайлбар дамжуулна)
