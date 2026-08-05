@@ -392,6 +392,16 @@
       </div>
 
       <div class="field">
+        <label>Зураг авалтын төрөл</label>
+        <div class="brand-row">
+          <button class="brand-btn active" data-shoot-btn="lifestyle">Lifestyle</button>
+          <button class="brand-btn" data-shoot-btn="flatlay">Flat Lay</button>
+          <button class="brand-btn" data-shoot-btn="beautifier">Beautifier</button>
+          <button class="brand-btn" data-shoot-btn="model">Virtual Model</button>
+        </div>
+      </div>
+
+      <div class="field">
         <label>Бүтээгдэхүүний зураг</label>
         <div class="dropzone" id="dropzone">
           <input type="file" id="fileInput" accept="image/*">
@@ -481,6 +491,17 @@ brandButtons.forEach(btn => {
     mainApp.dataset.brand = currentBrand;
     stageLabel.textContent = BRAND_NAMES[currentBrand];
     loadGallery();
+  };
+});
+
+/* ---------- SHOOT TYPE (Lifestyle / Flat Lay / Beautifier / Virtual Model) ---------- */
+let currentShootType = 'lifestyle';
+const shootButtons = document.querySelectorAll('[data-shoot-btn]');
+shootButtons.forEach(btn => {
+  btn.onclick = () => {
+    shootButtons.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentShootType = btn.dataset.shootBtn;
   };
 });
 
@@ -611,7 +632,7 @@ let lastResultUrl = null; // хамгийн сүүлд амжилттай үүс
 
 // Нийтлэг generate+polling logic — эхний generate болон дараагийн "засварлах"
 // (regenerate) хоёулаа энийг дуудна.
-async function runGeneration({ productImageUrl, referenceImageUrls, description, btnEl, defaultBtnText, mode }){
+async function runGeneration({ productImageUrl, referenceImageUrls, description, btnEl, defaultBtnText, mode, shootType }){
   genError.classList.add('hidden');
   btnEl.disabled = true;
 
@@ -628,7 +649,8 @@ async function runGeneration({ productImageUrl, referenceImageUrls, description,
         description,
         productImageUrl,
         referenceImageUrls,
-        mode
+        mode,
+        shootType
       })
     }).catch(() => {
       // Энэ fetch өөрөө network дээр амжилтгүй болсон ч — доорх polling
@@ -731,7 +753,8 @@ generateBtn.onclick = async () => {
       description,
       btnEl: generateBtn,
       defaultBtnText: 'Зураг үүсгэх',
-      mode: 'compose'
+      mode: 'compose',
+      shootType: currentShootType
     });
   } catch(err){
     document.getElementById('genSpinner')?.remove();
