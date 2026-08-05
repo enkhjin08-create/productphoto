@@ -38,9 +38,10 @@ async function describeReferenceStyle(referenceImages) {
   const parts = [
     {
       text: [
-        'Look at the attached photo(s) purely as an aesthetic mood board.',
-        'In 2-3 concise sentences, describe ONLY the reusable style qualities: type of setting/background, lighting quality and direction, color palette, materials/textures visible, and overall mood.',
-        'Do NOT mention or describe any people, faces, specific products, or identifiable objects in the photo(s) — focus exclusively on background, lighting, and color/mood, since this description will guide an entirely unrelated new photoshoot.'
+        'Look at the attached photo(s) as a location/style scout would, to brief a product photographer on where and how to shoot.',
+        'Write 4-6 concise, specific, visually descriptive sentences covering: the TYPE of location/setting in detail (e.g. outdoor coastal walkway with stone balustrade overlooking the sea and hills, or indoor minimalist wooden cafe table by a window, etc.), any distinctive surfaces/materials/architecture visible (stone, wood, water, tile, fabric, plants, sky, etc.), the lighting direction/quality/time of day, the overall color palette, and the general mood/atmosphere.',
+        'Be concrete and specific rather than generic — name actual visual elements you see (e.g. "weathered stone balustrade", "distant hills and calm sea", "overcast soft daylight") so a photographer could recreate a similar-feeling scene without seeing the original photo.',
+        'Do NOT describe or mention any people, faces, or the specific product/subject being held or worn — skip over them entirely and describe only the environment around them.'
       ].join(' ')
     }
   ];
@@ -207,12 +208,99 @@ async function generateBackgroundScene(fullPrompt) {
   return { base64: inline.data, mimeType: inline.mimeType || inline.mime_type };
 }
 
+// ---------- Дэвсгэр зураг дээр бүтээгдэхүүнийг хаана, ямар хэмжээгээр байрлуулбал
+// зохимжтой болохыг Gemini-ээр ("ухаалаг" placement) тодорхойлуулах ----------
+// Тогтмол heuristic (төв, 55%)-ийн оронд, зурган бүрд тохирсон байрлал/хэмжээг
+// динамик санал болгуулна. Алдаа гарвал null буцааж, дуудагч тал default руу шилжинэ.
+async function analyzePlacement(backgroundBase64) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  const model = 'gemini-2.5-flash';
+
+  const parts = [
+    {
+      text: [
+        'This image is a photoshoot background scene with intentionally left empty space where a product will be placed afterward.',
+        'Respond with ONLY a raw JSON object (no markdown fences, no explanation) with exactly these fields:',
+        '"xRatio": number 0-1, the horizontal center of the empty placement area as a fraction of image width;',
+        '"yRatio": number 0-1, the vertical CENTER of where the product should sit as a fraction of image height (usually resting on a visible surface, so above the bottom edge);',
+        '"widthRatio": number 0-1, the suggested width of the product relative to the full image width so it looks proportionate and well-scaled for this specific scene.',
+        'Example response: {"xRatio":0.5,"yRatio":0.6,"widthRatio":0.5}'
+      ].join(' ')
+    },
+    { inline_data: { mime_type: 'image/png', data: backgroundBase64 } }
+  ];
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts }] })
+      }
+    );
+    if (!res.ok) {
+      console.error('analyzePlacement алдаа:', await res.text());
+      return null;
+    }
+    const data = await res.json();
+    const textPart = data?.candidates?.[0]?.content?.parts?.find(p => p.text);
+    if (!textPart) return null;
+    const cleaned = textPart.text.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (
+      typeof parsed.xRatio === 'number' &&
+      typeof parsed.yRatio === 'number' &&
+      typeof parsed.widthRatio === 'number'
+    ) {
+      return parsed;
+    }
+    return null;
+  } catch (err) {
+    console.error('analyzePlacement алдаа:', err);
+    return null;
+  }
+}
+
+// ---------- Цэвэр, зөөлөн градиент дэвсгэр үүсгэх (Product Beautifier горимд) ----------
+// Gemini дуудалт огт хэрэггүй тул хурдан бөгөөд хямд — цэвэр e-commerce каталогийн
+// маягийн дэвсгэр, brand-ийн өнгөтэй тохирсон зөөлөн градиент.
+async function generateSolidBackdrop(brand) {
+  const sharp = require('sharp');
+  const CANVAS_SIZE = 1600;
+
+  const BRAND_GRADIENTS = {
+    zuvhuntuund: ['#f7f0ec', '#e9d8d2'],
+    meowie: ['#fdf3e6', '#f6dcb9'],
+    cutecups: ['#f7f0fb', '#e9d9f2']
+  };
+  const [c1, c2] = BRAND_GRADIENTS[brand] || ['#f5f5f2', '#e6e4df'];
+
+  const svg = `<svg width="${CANVAS_SIZE}" height="${CANVAS_SIZE}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="bg" cx="50%" cy="40%" r="75%">
+        <stop offset="0%" stop-color="${c1}"/>
+        <stop offset="100%" stop-color="${c2}"/>
+      </radialGradient>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#bg)"/>
+  </svg>`;
+
+  const buffer = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { base64: buffer.toString('base64') };
+}
+
 // ---------- Бүтээгдэхүүний cutout-ийг дэвсгэр дээр байрлуулж, сүүдэртэй нэгтгэх ----------
 // sharp ашиглан deterministic (тогтмол, найдвартай) байдлаар composite хийнэ —
 // AI биш, тиймээс бүтээгдэхүүний pixel 100% хадгалагдана.
-async function compositeProductOntoBackground({ cutoutBase64, backgroundBase64 }) {
+// placement: { xRatio, yRatio, widthRatio } — analyzePlacement-с ирсэн эсвэл default
+async function compositeProductOntoBackground({ cutoutBase64, backgroundBase64, placement }) {
   const sharp = require('sharp');
   const CANVAS_SIZE = 1600;
+
+  const xRatio = placement && typeof placement.xRatio === 'number' ? placement.xRatio : 0.5;
+  const yRatio = placement && typeof placement.yRatio === 'number' ? placement.yRatio : 0.62;
+  const widthRatio = placement && typeof placement.widthRatio === 'number' ? placement.widthRatio : 0.55;
 
   const cutoutBuffer = Buffer.from(cutoutBase64, 'base64');
   const backgroundBuffer = Buffer.from(backgroundBase64, 'base64');
@@ -222,16 +310,19 @@ async function compositeProductOntoBackground({ cutoutBase64, backgroundBase64 }
     .resize(CANVAS_SIZE, CANVAS_SIZE, { fit: 'cover' })
     .toBuffer();
 
-  // Бүтээгдэхүүнийг канвасын ойролцоогоор 55% өргөнд багтаана
-  const targetWidth = Math.round(CANVAS_SIZE * 0.55);
+  // Бүтээгдэхүүнийг санал болгосон (эсвэл default) өргөнд багтаана
+  const targetWidth = Math.round(CANVAS_SIZE * Math.min(Math.max(widthRatio, 0.2), 0.85));
   const cutoutResizer = sharp(cutoutBuffer).resize({ width: targetWidth, withoutEnlargement: true });
   const cutoutMeta = await cutoutResizer.metadata();
   const cutoutFinalBuffer = await cutoutResizer.toBuffer();
   const cutoutW = cutoutMeta.width || targetWidth;
   const cutoutH = cutoutMeta.height || targetWidth;
 
-  const left = Math.round((CANVAS_SIZE - cutoutW) / 2);
-  const top = Math.round(CANVAS_SIZE * 0.62 - cutoutH / 2); // арай доод хэсэгт "hero" байрлал
+  // Канвасаас гарахгүй байхаар clamp хийнэ
+  let left = Math.round(CANVAS_SIZE * xRatio - cutoutW / 2);
+  let top = Math.round(CANVAS_SIZE * yRatio - cutoutH / 2);
+  left = Math.max(0, Math.min(left, CANVAS_SIZE - cutoutW));
+  top = Math.max(0, Math.min(top, CANVAS_SIZE - cutoutH));
 
   // Зөөлөн бүдгэрсэн эллипс сүүдэр (SVG)
   const shadowWidth = Math.round(cutoutW * 0.8);
@@ -246,8 +337,10 @@ async function compositeProductOntoBackground({ cutoutBase64, backgroundBase64 }
     <ellipse cx="${shadowWidth / 2}" cy="${shadowHeight / 2}" rx="${shadowWidth / 2}" ry="${shadowHeight / 2}" fill="url(#g)"/>
   </svg>`;
   const shadowBuffer = await sharp(Buffer.from(shadowSvg)).png().toBuffer();
-  const shadowLeft = Math.round((CANVAS_SIZE - shadowWidth) / 2);
-  const shadowTop = Math.round(top + cutoutH - shadowHeight * 0.55);
+  let shadowLeft = Math.round(left + cutoutW / 2 - shadowWidth / 2);
+  let shadowTop = Math.round(top + cutoutH - shadowHeight * 0.55);
+  shadowLeft = Math.max(0, Math.min(shadowLeft, CANVAS_SIZE - shadowWidth));
+  shadowTop = Math.max(0, Math.min(shadowTop, CANVAS_SIZE - shadowHeight));
 
   const finalBuffer = await sharp(background)
     .composite([
@@ -260,7 +353,7 @@ async function compositeProductOntoBackground({ cutoutBase64, backgroundBase64 }
   return finalBuffer.toString('base64');
 }
 
-// ---------- Gemini image API дуудах (ЗАСВАР/EDIT горимд ашиглагдана) ----------
+// ---------- Gemini image API дуудах (ЗАСВАР/EDIT ба VIRTUAL MODEL горимд ашиглагдана) ----------
 // productImage: { base64, mimeType } — өөрчлөгдөхгүй байх ёстой бүтээгдэхүүн
 // referenceStyleText: reference зургуудаас урьдчилан гаргуулсан текст тайлбар (pixel биш!)
 async function generateWithGemini({ productImage, referenceStyleText, fullPrompt }) {
@@ -331,8 +424,10 @@ exports.handler = async (event) => {
   // дамжуулан GitHub-д аль хэдийн commit хийгдсэн байна.
   // mode: 'compose' (анхны generate — segmentation+composite) | 'edit' (Дахин
   // үүсгэх/засварлах — бүтэн зургийг Gemini-ээр шууд edit хийнэ)
-  const { requestId, brand, description, productImageUrl, referenceImageUrls, mode } = JSON.parse(event.body);
+  // shootType: 'lifestyle' (default) | 'flatlay' | 'beautifier' | 'model'
+  const { requestId, brand, description, productImageUrl, referenceImageUrls, mode, shootType } = JSON.parse(event.body);
   const effectiveMode = mode === 'edit' ? 'edit' : 'compose';
+  const effectiveShootType = ['flatlay', 'beautifier', 'model'].includes(shootType) ? shootType : 'lifestyle';
 
   if (!requestId || !brand || !productImageUrl) {
     console.error('Дутуу параметр:', { requestId: !!requestId, brand, productImageUrl: !!productImageUrl });
@@ -348,6 +443,7 @@ exports.handler = async (event) => {
     brand,
     description: description || null,
     mode: effectiveMode,
+    shootType: effectiveShootType,
     referenceCount: (referenceImageUrls || []).length,
     createdAt: new Date().toISOString()
   });
@@ -356,8 +452,36 @@ exports.handler = async (event) => {
     let finalBase64;
     let finalExtension;
 
-    if (effectiveMode === 'compose') {
-      // ---------- COMPOSE ГОРИМ: segmentation + дэвсгэр generate + composite ----------
+    if (effectiveMode === 'compose' && effectiveShootType === 'model') {
+      // ---------- VIRTUAL MODEL ГОРИМ: segmentation ашиглахгүй ----------
+      // Учир нь бодит хүн загварт cutout-ийг deterministic байдлаар зохимжтой
+      // байрлуулах боломжгүй (pose, хэмжээ, өнгөлөг зэрэг маш нарийн warping
+      // шаардана) — тиймээс энд Gemini-ээр бүхэлд нь дахин зурах хуучин аргыг
+      // санаатайгаар ашиглана (бүтээгдэхүүний identity хадгалах зааврыг хатуу
+      // тавьсан хэвээр).
+      const productImage = await fetchImageAsBase64(productImageUrl);
+      const referenceImages = [];
+      for (const url of (referenceImageUrls || [])) {
+        referenceImages.push(await fetchImageAsBase64(url));
+      }
+      let referenceStyleText = null;
+      if (referenceImages.length) {
+        referenceStyleText = await describeReferenceStyle(referenceImages);
+      }
+
+      const fullPrompt = [
+        'Generate a professional lifestyle/editorial photo of a realistic human model naturally wearing, holding, or using this exact product — choose the most natural interaction based on what kind of product it is (worn on shoulder/back if it is a bag, held in hand if small, worn on the body if clothing, etc.).',
+        'PRODUCT IDENTITY: the product\'s shape, logo, printed text, and true colors must stay 100% recognizable.',
+        'The model should look natural, candid, and professionally lit, with premium commercial color grading — not a flat snapshot.',
+        description ? `Additional direction from the user: ${description}.` : '',
+        referenceStyleText ? `Style/mood reference (described in words only): ${referenceStyleText}` : ''
+      ].filter(Boolean).join(' ');
+
+      const generated = await generateWithGemini({ productImage, referenceStyleText: null, fullPrompt });
+      finalBase64 = generated.base64Data;
+      finalExtension = (generated.mimeType || 'image/png').split('/')[1] || 'png';
+    } else if (effectiveMode === 'compose') {
+      // ---------- LIFESTYLE / FLAT LAY / BEAUTIFIER: segmentation + composite ----------
       const productImage = await fetchImageAsBase64(productImageUrl);
       const referenceImages = [];
       for (const url of (referenceImageUrls || [])) {
@@ -369,32 +493,65 @@ exports.handler = async (event) => {
         referenceStyleText = await describeReferenceStyle(referenceImages);
       }
 
-      const BASE_PROMPT = [
-        'Generate a single, cohesive, high-resolution professional product photoshoot BACKGROUND SCENE.',
-        'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, with a clear, intentional, uncluttered composition — not a random pile of unrelated items.',
-        'Arrange the scene like an experienced stylist would: balanced composition with clear visual hierarchy, leaving open space in the lower-center for a product to be placed afterward.',
-        'If props are present, keep the palette and materials harmonious; when in doubt, use fewer, more deliberate props rather than many mismatched ones.',
-        'PREMIUM COLOR GRADING & FINISH: apply polished, high-end commercial color grading — rich but controlled saturation, deep confident contrast (not flat or washed out), clean true blacks and bright-but-not-blown highlights, a subtle cinematic tone curve like a big-budget ad campaign.',
-        'Avoid a dull, flat, snapshot, or amateur look at all costs — this must feel like it belongs in a premium brand advertisement.'
-      ].join(' ');
-
-      const fullPrompt = [
-        BASE_PROMPT,
-        description ? `Additional direction from the user: ${description}.` : '',
-        referenceStyleText ? `Style/mood direction (described in words only): ${referenceStyleText}` : '',
-        'High resolution, natural lighting, commercial product photography quality, shot on a full-frame camera with shallow depth of field, premium advertising color grade.'
-      ].filter(Boolean).join(' ');
-
       // 2. Бүтээгдэхүүнийг дэвсгэрээс нь цэвэрхэн тайрч авах (pixel 100% хадгалагдана)
       const cutout = await removeBackground(productImage.base64, productImage.mimeType);
 
-      // 3. Зөвхөн дэвсгэр зураг Gemini-ээр үүсгэх (бүтээгдэхүүнгүй)
-      const background = await generateBackgroundScene(fullPrompt);
+      let background;
+      let placement;
 
-      // 4. Хоёуланг нь sharp-аар deterministic байдлаар нэгтгэх
+      if (effectiveShootType === 'beautifier') {
+        // Gemini дуудалт хэрэггүй — хурдан, цэвэр e-commerce каталог маягийн дэвсгэр
+        background = await generateSolidBackdrop(brand);
+        placement = { xRatio: 0.5, yRatio: 0.55, widthRatio: 0.6 };
+      } else {
+        const SHARED_TAIL = [
+          'PREMIUM COLOR GRADING & FINISH: apply polished, high-end commercial color grading — rich but controlled saturation, deep confident contrast (not flat or washed out), clean true blacks and bright-but-not-blown highlights, a subtle cinematic tone curve like a big-budget ad campaign.',
+          'Avoid a dull, flat, snapshot, or amateur look at all costs — this must feel like it belongs in a premium brand advertisement.'
+        ].join(' ');
+
+        const BASE_PROMPT = effectiveShootType === 'flatlay'
+          ? [
+              'Generate a single, cohesive, high-resolution FLAT LAY product photography BACKGROUND SCENE, shot from directly overhead (top-down / bird\'s-eye view).',
+              'Show a flat surface filling the frame (e.g. wood table, marble counter, linen fabric, concrete, or similar), styled with a few harmonious, deliberate props arranged around a clear open area in the center where the product will be placed afterward.',
+              'If props are present, keep the palette and materials harmonious; when in doubt, use fewer, more deliberate props rather than many mismatched ones.',
+              SHARED_TAIL
+            ].join(' ')
+          : [
+              'Generate a single, cohesive, high-resolution professional product photoshoot BACKGROUND SCENE.',
+              'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, with a clear, intentional, uncluttered composition — not a random pile of unrelated items.',
+              'Arrange the scene like an experienced stylist would: balanced composition with clear visual hierarchy, leaving open space in the lower-center for a product to be placed afterward.',
+              'If props are present, keep the palette and materials harmonious; when in doubt, use fewer, more deliberate props rather than many mismatched ones.',
+              SHARED_TAIL
+            ].join(' ');
+
+        const fullPrompt = [
+          // Reference тайлбар байвал эхэнд, ХАМГИЙН ЧУХАЛ зааврын хувьд байрлуулна —
+          // ингэснээр generic "premium studio" boilerplate үүнийг дарж, Gemini
+          // өөрийн "default" неутраль дэвсгэр рүү шилжихээс сэргийлнэ.
+          referenceStyleText
+            ? `PRIORITY SCENE BRIEF (this defines what the background must actually look like — follow it closely, do not default to a generic neutral studio backdrop instead): ${referenceStyleText}`
+            : '',
+          BASE_PROMPT,
+          description ? `Additional direction from the user: ${description}.` : '',
+          'High resolution, natural lighting, commercial product photography quality, shot on a full-frame camera with shallow depth of field, premium advertising color grade.'
+        ].filter(Boolean).join(' ');
+
+        // 3. Зөвхөн дэвсгэр зураг Gemini-ээр үүсгэх (бүтээгдэхүүнгүй)
+        background = await generateBackgroundScene(fullPrompt);
+
+        // 4. Уг дэвсгэрт тохирсон байрлал/хэмжээг Gemini-ээр ухаалаг тодорхойлуулах
+        // (алдаа гарвал null буцаж, compositeProductOntoBackground default руу шилжинэ)
+        placement = await analyzePlacement(background.base64);
+        if (effectiveShootType === 'flatlay' && !placement) {
+          placement = { xRatio: 0.5, yRatio: 0.5, widthRatio: 0.6 };
+        }
+      }
+
+      // 5. Хоёуланг нь sharp-аар deterministic байдлаар нэгтгэх
       finalBase64 = await compositeProductOntoBackground({
         cutoutBase64: cutout.base64,
-        backgroundBase64: background.base64
+        backgroundBase64: background.base64,
+        placement
       });
       finalExtension = 'png';
     } else {
