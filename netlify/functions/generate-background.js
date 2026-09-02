@@ -427,7 +427,7 @@ exports.handler = async (event) => {
   // shootType: 'lifestyle' (default) | 'flatlay' | 'beautifier' | 'model'
   const { requestId, brand, description, productImageUrl, referenceImageUrls, mode, shootType } = JSON.parse(event.body);
   const effectiveMode = mode === 'edit' ? 'edit' : 'compose';
-  const effectiveShootType = ['flatlay', 'beautifier', 'model'].includes(shootType) ? shootType : 'lifestyle';
+  const effectiveShootType = ['flatlay', 'beautifier', 'model', 'campaign'].includes(shootType) ? shootType : 'lifestyle';
 
   if (!requestId || !brand || !productImageUrl) {
     console.error('Дутуу параметр:', { requestId: !!requestId, brand, productImageUrl: !!productImageUrl });
@@ -480,6 +480,94 @@ exports.handler = async (event) => {
       const generated = await generateWithGemini({ productImage, referenceStyleText: null, fullPrompt });
       finalBase64 = generated.base64Data;
       finalExtension = (generated.mimeType || 'image/png').split('/')[1] || 'png';
+    } else if (effectiveMode === 'compose' && effectiveShootType === 'campaign') {
+      // ---------- CAMPAIGN ГОРИМ: нэг бүтээгдэхүүнээс олон orchин зэрэг үүсгэх ----------
+      // Cutout (remove.bg) ЗӨВХӨН НЭГ УДАА тооцоологдоно — доорх бүх orchинд ижил
+      // cutout-ийг дахин ашигладаг тул бүтээгдэхүүний identity (лого, хэлбэр, өнгө)
+      // orchин бүрт 100% ижил хэвээр байна, MEC-ийн жишээ пост дээрх шиг.
+      const productImage = await fetchImageAsBase64(productImageUrl);
+      const cutout = await removeBackground(productImage.base64, productImage.mimeType);
+
+      // Хэрэглэгч "Тайлбар" талбарт мөр мөрөөр өөрийн orchин бичсэн бол ашиглана,
+      // үгүй бол brand тус бүрийн 5 стандарт orchин.
+      const customScenes = (description || '')
+        .split('\n')
+        .map(s => s.trim())
+        .filter(Boolean);
+
+      const DEFAULT_CAMPAIGN_SCENES = {
+        meowie: [
+          'Cozy warm wooden shelf with a small potted plant and soft knit blanket blurred in the background, soft afternoon window light from the left',
+          'Clean studio flat backdrop in soft cream/beige tone with subtle shadow beneath the product, minimal styling, one small dried flower stem to the side',
+          'Round marble side table with a blurred cozy cat-cafe interior in the background, warm string lights and plants, natural warm lighting',
+          'Outdoor pastel picnic blanket with soft dappled sunlight and blurred greenery in the background, slight overhead angle',
+          'Extreme close-up on a soft neutral surface showing fine texture and detail, gentle directional light creating soft highlights'
+        ],
+        zuvhuntuund: [
+          'Warm minimalist wooden desk with soft daylight from a window, a cup of tea blurred nearby',
+          'Clean studio backdrop in soft blush tone with subtle shadow, one dried flower stem styling',
+          'Cozy reading nook with a knit blanket and soft lamp light in the blurred background',
+          'Outdoor cafe table with warm afternoon sunlight and blurred greenery',
+          'Extreme close-up showing fine paper/material texture and detail with soft directional light'
+        ],
+        cutecups: [
+          'Bright kitchen counter with soft morning light and blurred greenery in the background',
+          'Clean studio backdrop in soft lavender tone with subtle shadow, minimal styling',
+          'Cozy cafe table scene with warm ambient light and blurred cups in the background',
+          'Outdoor picnic setting with soft dappled sunlight',
+          'Extreme close-up showing fine texture and glaze detail with soft directional light'
+        ]
+      };
+
+      const scenes = customScenes.length
+        ? customScenes
+        : (DEFAULT_CAMPAIGN_SCENES[brand] || DEFAULT_CAMPAIGN_SCENES.meowie);
+
+      const SHARED_TAIL = [
+        'PREMIUM COLOR GRADING & FINISH: apply polished, high-end commercial color grading — rich but controlled saturation, deep confident contrast, clean true blacks and bright-but-not-blown highlights, a subtle cinematic tone curve like a big-budget ad campaign.',
+        'Avoid a dull, flat, snapshot, or amateur look at all costs — this must feel like it belongs in a premium brand advertisement.'
+      ].join(' ');
+
+      const campaignImageUrls = [];
+      // Хамгийн ихдээ 6 orchин — Netlify background function-ий 15 минутын
+      // хугацаанд бүгд багтаах үүднээс хязгаарлав.
+      for (const scene of scenes.slice(0, 6)) {
+        const fullPrompt = [
+          'Generate a single, cohesive, high-resolution professional product photoshoot BACKGROUND SCENE.',
+          'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, with a clear, intentional, uncluttered composition — not a random pile of unrelated items.',
+          `SCENE: ${scene}.`,
+          'Leave a clear, uncluttered open area (a surface, floor, or open space) roughly in the lower-center of the frame, where a product will be composited in afterward.',
+          SHARED_TAIL
+        ].join(' ');
+
+        try {
+          const background = await generateBackgroundScene(fullPrompt);
+          const placement = await analyzePlacement(background.base64);
+          const composited = await compositeProductOntoBackground({
+            cutoutBase64: cutout.base64,
+            backgroundBase64: background.base64,
+            placement
+          });
+          const url = await commitImageToGithub({ base64Data: composited, brand, extension: 'png' });
+          campaignImageUrls.push(url);
+        } catch (sceneErr) {
+          // Нэг orchин амжилтгүй болсон ч бусдыг нь үргэлжлүүлнэ
+          console.error('Campaign orchин алдаа (алгасав):', sceneErr.message);
+        }
+      }
+
+      if (!campaignImageUrls.length) {
+        throw new Error('Ямар ч orchин амжилттай үүсгэгдсэнгүй.');
+      }
+
+      await docRef.update({
+        status: 'done',
+        imageUrl: campaignImageUrls[0],
+        imageUrls: campaignImageUrls,
+        completedAt: new Date().toISOString()
+      });
+
+      return { statusCode: 200, body: 'OK' };
     } else if (effectiveMode === 'compose') {
       // ---------- LIFESTYLE / FLAT LAY / BEAUTIFIER: segmentation + composite ----------
       const productImage = await fetchImageAsBase64(productImageUrl);

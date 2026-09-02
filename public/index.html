@@ -398,6 +398,7 @@
           <button class="brand-btn" data-shoot-btn="flatlay">Flat Lay</button>
           <button class="brand-btn" data-shoot-btn="beautifier">Beautifier</button>
           <button class="brand-btn" data-shoot-btn="model">Virtual Model</button>
+          <button class="brand-btn" data-shoot-btn="campaign">Campaign (олон orchин)</button>
         </div>
       </div>
 
@@ -423,7 +424,7 @@
       </div>
 
       <div class="field">
-        <label>Тайлбар (сонголтоор)</label>
+        <label id="descriptionLabel">Тайлбар (сонголтоор)</label>
         <textarea id="descriptionPrompt" placeholder="жишээ: reference зурган дээрхтэй төстэй мод дэвсгэртэй, өглөөний зөөлөн гэрэлтэй, дулаан аяга... (хоосон орхивол ерөнхий professional photoshoot байдлаар үүснэ)" style="min-height:110px;"></textarea>
       </div>
 
@@ -497,11 +498,23 @@ brandButtons.forEach(btn => {
 /* ---------- SHOOT TYPE (Lifestyle / Flat Lay / Beautifier / Virtual Model) ---------- */
 let currentShootType = 'lifestyle';
 const shootButtons = document.querySelectorAll('[data-shoot-btn]');
+const descriptionLabel = document.getElementById('descriptionLabel');
+const descriptionPromptEl = document.getElementById('descriptionPrompt');
+const DEFAULT_DESC_PLACEHOLDER = descriptionPromptEl.placeholder;
+const CAMPAIGN_DESC_PLACEHOLDER = 'Мөр бүрд өөр orchин бичнэ үү (хоосон орхивол brand-д тохирсон 5 стандарт orchин автоматаар ашиглагдана). Жишээ:\nдулаан модон тавиур дээр, зөөлөн орой цагийн гэрэлтэй\nцэвэр студийн крем өнгийн дэвсгэр, сүүдэртэй\nгадаа picnic blanket дээр, нар тусаж буй';
+
 shootButtons.forEach(btn => {
   btn.onclick = () => {
     shootButtons.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentShootType = btn.dataset.shootBtn;
+    if(currentShootType === 'campaign'){
+      descriptionLabel.textContent = 'Orchин жагсаалт (сонголтоор, мөр тус бүр = 1 зураг)';
+      descriptionPromptEl.placeholder = CAMPAIGN_DESC_PLACEHOLDER;
+    } else {
+      descriptionLabel.textContent = 'Тайлбар (сонголтоор)';
+      descriptionPromptEl.placeholder = DEFAULT_DESC_PLACEHOLDER;
+    }
   };
 });
 
@@ -671,21 +684,44 @@ async function runGeneration({ productImageUrl, referenceImageUrls, description,
 
     document.getElementById('genSpinner')?.remove();
     stageEmpty.classList.add('hidden');
-    stage.querySelectorAll('img, .stage-actions').forEach(el => el.remove());
+    stage.querySelectorAll('img, .stage-actions, .campaign-grid').forEach(el => el.remove());
 
-    const resultImg = document.createElement('img');
-    resultImg.src = result.imageUrl;
-    stage.appendChild(resultImg);
+    if(Array.isArray(result.imageUrls) && result.imageUrls.length > 1){
+      // Campaign горим: хэд хэдэн orchин зэрэг гарсан тул grid байдлаар харуулна
+      const grid = document.createElement('div');
+      grid.className = 'campaign-grid';
+      grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;';
+      result.imageUrls.forEach(url => {
+        const img = document.createElement('img');
+        img.src = url;
+        img.style.cssText = 'width:100%;border-radius:10px;cursor:pointer;display:block;';
+        img.title = 'Дарж шинэ tab дээр томоор харах';
+        img.onclick = () => window.open(url, '_blank');
+        grid.appendChild(img);
+      });
+      stage.appendChild(grid);
+      lastResultUrl = result.imageUrls[0];
 
-    const actions = document.createElement('div');
-    actions.className = 'stage-actions';
-    actions.innerHTML = `
-      <a href="${result.imageUrl}" download target="_blank">Татах</a>
-      <button onclick="navigator.clipboard.writeText('${result.imageUrl}')">Линк хуулах</button>
-    `;
-    stage.appendChild(actions);
+      const actions = document.createElement('div');
+      actions.className = 'stage-actions';
+      actions.innerHTML = `<span style="opacity:.7;font-size:13px;">${result.imageUrls.length} зураг үүслээ — дарж татаж/харж болно</span>`;
+      stage.appendChild(actions);
+    } else {
+      const resultImg = document.createElement('img');
+      resultImg.src = result.imageUrl;
+      stage.appendChild(resultImg);
 
-    lastResultUrl = result.imageUrl;
+      const actions = document.createElement('div');
+      actions.className = 'stage-actions';
+      actions.innerHTML = `
+        <a href="${result.imageUrl}" download target="_blank">Татах</a>
+        <button onclick="navigator.clipboard.writeText('${result.imageUrl}')">Линк хуулах</button>
+      `;
+      stage.appendChild(actions);
+
+      lastResultUrl = result.imageUrl;
+    }
+
     editPanel.classList.remove('hidden');
     editPrompt.value = '';
 
