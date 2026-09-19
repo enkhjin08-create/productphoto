@@ -108,10 +108,12 @@
   }
   .brand-row{
     display:flex;
+    flex-wrap:wrap;
     gap:8px;
   }
   .brand-btn{
-    flex:1;
+    flex:1 1 calc(33% - 6px);
+    min-width:90px;
     padding:10px 8px;
     border-radius:9px;
     border:1px solid var(--line);
@@ -399,6 +401,7 @@
           <button class="brand-btn" data-shoot-btn="flatlay">Flat Lay</button>
           <button class="brand-btn active" data-shoot-btn="beautifier">Beautifier</button>
           <button class="brand-btn" data-shoot-btn="model">Virtual Model</button>
+          <button class="brand-btn" data-shoot-btn="enhance">Enhance</button>
         </div>
       </div>
 
