@@ -360,6 +360,7 @@
   }
   .hidden{ display:none !important; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
 </head>
 <body>
 
@@ -404,7 +405,7 @@
       <div class="field">
         <label>Бүтээгдэхүүний зураг</label>
         <div class="dropzone" id="dropzone">
-          <input type="file" id="fileInput" accept="image/*">
+          <input type="file" id="fileInput" accept="image/*,.heic,.heif">
           <div id="dropzoneContent">
             <p>Энд дарж зураг сонгох<br>эсвэл чирж оруулах</p>
           </div>
@@ -414,7 +415,7 @@
       <div class="field hidden" id="referenceField">
         <label>Reference зургууд (сонголтоор, олноор)</label>
         <div class="dropzone" id="refDropzone">
-          <input type="file" id="refFileInput" accept="image/*" multiple>
+          <input type="file" id="refFileInput" accept="image/*,.heic,.heif" multiple>
           <div id="refDropzoneContent">
             <p>Дэвсгэр/тайлбар зорилготой<br>жишээ зургууд нэмэх</p>
           </div>
@@ -534,6 +535,23 @@ dropzone.ondrop = e => { e.preventDefault(); handleFile(e.dataTransfer.files[0])
 /* ---------- Зураг resize/compress хийх (Gemini рүү явуулахын өмнө) ---------- */
 // Том хэмжээтэй утасны зурагнууд Netlify function-ий хугацаа хэтрүүлэхээс сэргийлж
 // 1400px-ээс хэтрэхгүй, JPEG 0.85 чанараар шахна.
+/* ---------- HEIC (iPhone) зургийг JPEG рүү хөрвүүлэх ---------- */
+// Chrome/Android зэрэг ихэнх browser HEIC-ийг canvas-аар шууд уншиж чаддаггүй
+// тул эхлээд heic2any-аар JPEG болгож хөрвүүлнэ, дараа нь ердийн resize урсгал руу дамжина.
+function isHeic(file){
+  const type = (file.type || '').toLowerCase();
+  const name = (file.name || '').toLowerCase();
+  return type.includes('heic') || type.includes('heif') || name.endsWith('.heic') || name.endsWith('.heif');
+}
+
+async function toDecodableFile(file){
+  if(!isHeic(file)) return file;
+  const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+  const blob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+  const newName = (file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg';
+  return new File([blob], newName, { type: 'image/jpeg' });
+}
+
 function resizeImage(file, maxDimension = 1400, quality = 0.85){
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -563,17 +581,20 @@ function resizeImage(file, maxDimension = 1400, quality = 0.85){
   });
 }
 
-function handleFile(file){
+async function handleFile(file){
   if(!file) return;
-  resizeImage(file).then(({ dataUrl, base64, mimeType }) => {
+  try {
+    const decodableFile = await toDecodableFile(file);
+    const { dataUrl, base64, mimeType } = await resizeImage(decodableFile);
     uploadedBase64 = base64;
     uploadedMime = mimeType;
     dropzoneContent.innerHTML = `<img src="${dataUrl}" alt="preview">`;
     generateBtn.disabled = false;
-  }).catch(() => {
-    genError.textContent = 'Зураг уншихад алдаа гарлаа, дахин оролдоно уу.';
+  } catch(err){
+    console.error('Зураг боловсруулах алдаа:', err);
+    genError.textContent = 'Зураг уншихад алдаа гарлаа (HEIC хөрвүүлэлт амжилтгүй байж болзошгүй), дахин оролдоно уу.';
     genError.classList.remove('hidden');
-  });
+  }
 }
 
 /* ---------- REFERENCE IMAGES (олноор) ---------- */
@@ -587,14 +608,18 @@ refFileInput.onchange = e => { addReferenceFiles(e.target.files); refFileInput.v
 refDropzone.ondragover = e => e.preventDefault();
 refDropzone.ondrop = e => { e.preventDefault(); addReferenceFiles(e.dataTransfer.files); };
 
-function addReferenceFiles(fileList){
-  Array.from(fileList).forEach(file => {
-    if(!file.type.startsWith('image/')) return;
-    resizeImage(file, 1000, 0.8).then(({ dataUrl, base64, mimeType }) => {
+async function addReferenceFiles(fileList){
+  for (const file of Array.from(fileList)) {
+    if(!file.type.startsWith('image/') && !isHeic(file)) continue;
+    try {
+      const decodableFile = await toDecodableFile(file);
+      const { dataUrl, base64, mimeType } = await resizeImage(decodableFile, 1000, 0.8);
       referenceImages.push({ base64, mimeType, previewUrl: dataUrl });
       renderRefThumbs();
-    });
-  });
+    } catch(err){
+      console.error('Reference зураг боловсруулах алдаа:', err);
+    }
+  }
 }
 
 function renderRefThumbs(){
