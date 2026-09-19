@@ -146,7 +146,13 @@ async function removeBackground(base64, mimeType) {
     body: JSON.stringify({
       image_file_b64: base64,
       size: 'auto',
-      format: 'png'
+      format: 'png',
+      // Эх зурган дээрх бүтээгдэхүүний эргэн тойрны хоосон зайг (жишээ нь цагаан
+      // дэвсгэртэй эх зураг дээрх зай) арилгаж, зөвхөн бодит объектын хүрээгээр
+      // таслана. Үгүй бол дараагийн composite алхам дээр бүтээгдэхүүн жижиг
+      // харагдах шалтгаан болдог (нийт зурган хэмжээ дээр тулгуурлан scale хийдэг тул).
+      crop: true,
+      crop_margin: '5%'
     })
   });
 
@@ -223,7 +229,7 @@ async function analyzePlacement(backgroundBase64) {
         'Respond with ONLY a raw JSON object (no markdown fences, no explanation) with exactly these fields:',
         '"xRatio": number 0-1, the horizontal center of the empty placement area as a fraction of image width;',
         '"yRatio": number 0-1, the vertical CENTER of where the product should sit as a fraction of image height (usually resting on a visible surface, so above the bottom edge);',
-        '"widthRatio": number 0-1, the suggested width of the product relative to the full image width so it looks proportionate and well-scaled for this specific scene.',
+        '"widthRatio": number 0-1, the suggested width of the product relative to the full image width. The product should read as a clear HERO subject — typically between 0.45 and 0.65 — unless the scene composition specifically calls for a smaller accent placement; avoid suggesting a tiny/inconspicuous size.',
         'Example response: {"xRatio":0.5,"yRatio":0.6,"widthRatio":0.5}'
       ].join(' ')
     },
@@ -311,8 +317,12 @@ async function compositeProductOntoBackground({ cutoutBase64, backgroundBase64, 
     .toBuffer();
 
   // Бүтээгдэхүүнийг санал болгосон (эсвэл default) өргөнд багтаана
-  const targetWidth = Math.round(CANVAS_SIZE * Math.min(Math.max(widthRatio, 0.2), 0.85));
-  const cutoutResizer = sharp(cutoutBuffer).resize({ width: targetWidth, withoutEnlargement: true });
+  const targetWidth = Math.round(CANVAS_SIZE * Math.min(Math.max(widthRatio, 0.4), 0.85));
+  // withoutEnlargement-г ЗОРИУДААР ашиглаагүй — remove.bg-ийн crop:true тохиргоо
+  // cutout-ийг жижиг хэмжээгээр буцаадаг болсон тул, targetWidth-д хүрэхийн тулд
+  // sharp-аар том болгох (upscale) шаардлагатай. Үгүй бол бүтээгдэхүүн canvas
+  // дунд жижигхэн "нисч буй" мэт харагддаг байсан (яг таны олсон алдаа).
+  const cutoutResizer = sharp(cutoutBuffer).resize({ width: targetWidth });
   const cutoutMeta = await cutoutResizer.metadata();
   const cutoutFinalBuffer = await cutoutResizer.toBuffer();
   const cutoutW = cutoutMeta.width || targetWidth;
@@ -424,10 +434,10 @@ exports.handler = async (event) => {
   // дамжуулан GitHub-д аль хэдийн commit хийгдсэн байна.
   // mode: 'compose' (анхны generate — segmentation+composite) | 'edit' (Дахин
   // үүсгэх/засварлах — бүтэн зургийг Gemini-ээр шууд edit хийнэ)
-  // shootType: 'lifestyle' (default) | 'flatlay' | 'beautifier' | 'model'
+  // shootType: 'lifestyle' (default) | 'flatlay' | 'beautifier' | 'model' | 'enhance'
   const { requestId, brand, description, productImageUrl, referenceImageUrls, mode, shootType } = JSON.parse(event.body);
   const effectiveMode = mode === 'edit' ? 'edit' : 'compose';
-  const effectiveShootType = ['flatlay', 'beautifier', 'model', 'campaign'].includes(shootType) ? shootType : 'lifestyle';
+  const effectiveShootType = ['flatlay', 'beautifier', 'model', 'enhance'].includes(shootType) ? shootType : 'lifestyle';
 
   if (!requestId || !brand || !productImageUrl) {
     console.error('Дутуу параметр:', { requestId: !!requestId, brand, productImageUrl: !!productImageUrl });
@@ -480,94 +490,34 @@ exports.handler = async (event) => {
       const generated = await generateWithGemini({ productImage, referenceStyleText: null, fullPrompt });
       finalBase64 = generated.base64Data;
       finalExtension = (generated.mimeType || 'image/png').split('/')[1] || 'png';
-    } else if (effectiveMode === 'compose' && effectiveShootType === 'campaign') {
-      // ---------- CAMPAIGN ГОРИМ: нэг бүтээгдэхүүнээс олон orchин зэрэг үүсгэх ----------
-      // Cutout (remove.bg) ЗӨВХӨН НЭГ УДАА тооцоологдоно — доорх бүх orchинд ижил
-      // cutout-ийг дахин ашигладаг тул бүтээгдэхүүний identity (лого, хэлбэр, өнгө)
-      // orchин бүрт 100% ижил хэвээр байна, MEC-ийн жишээ пост дээрх шиг.
+    } else if (effectiveMode === 'compose' && effectiveShootType === 'enhance') {
+      // ---------- ENHANCE ГОРИМ: segmentation ашиглахгүй, дэвсгэр ЗОХИОХГҮЙ ----------
+      // Хэрэглэгч аль хэдийн зохион байгуулсан бодит зургаа авахыг хүсдэг (орчин,
+      // найруулга, объектууд бүгд яг хэвээрээ) — зөвхөн гэрэлтүүлэг, sharpness,
+      // өнгө, ерөнхий "premium" чанарыг сайжруулна. Тиймээс энд ч мөн segmentation
+      // хийхгүй, эх зургийг бүхэлд нь Gemini-ээр дахин зурж сайжруулна.
       const productImage = await fetchImageAsBase64(productImageUrl);
-      const cutout = await removeBackground(productImage.base64, productImage.mimeType);
-
-      // Хэрэглэгч "Тайлбар" талбарт мөр мөрөөр өөрийн orchин бичсэн бол ашиглана,
-      // үгүй бол brand тус бүрийн 5 стандарт orchин.
-      const customScenes = (description || '')
-        .split('\n')
-        .map(s => s.trim())
-        .filter(Boolean);
-
-      const DEFAULT_CAMPAIGN_SCENES = {
-        meowie: [
-          'Cozy warm wooden shelf with a small potted plant and soft knit blanket blurred in the background, soft afternoon window light from the left',
-          'Clean studio flat backdrop in soft cream/beige tone with subtle shadow beneath the product, minimal styling, one small dried flower stem to the side',
-          'Round marble side table with a blurred cozy cat-cafe interior in the background, warm string lights and plants, natural warm lighting',
-          'Outdoor pastel picnic blanket with soft dappled sunlight and blurred greenery in the background, slight overhead angle',
-          'Extreme close-up on a soft neutral surface showing fine texture and detail, gentle directional light creating soft highlights'
-        ],
-        zuvhuntuund: [
-          'Warm minimalist wooden desk with soft daylight from a window, a cup of tea blurred nearby',
-          'Clean studio backdrop in soft blush tone with subtle shadow, one dried flower stem styling',
-          'Cozy reading nook with a knit blanket and soft lamp light in the blurred background',
-          'Outdoor cafe table with warm afternoon sunlight and blurred greenery',
-          'Extreme close-up showing fine paper/material texture and detail with soft directional light'
-        ],
-        cutecups: [
-          'Bright kitchen counter with soft morning light and blurred greenery in the background',
-          'Clean studio backdrop in soft lavender tone with subtle shadow, minimal styling',
-          'Cozy cafe table scene with warm ambient light and blurred cups in the background',
-          'Outdoor picnic setting with soft dappled sunlight',
-          'Extreme close-up showing fine texture and glaze detail with soft directional light'
-        ]
-      };
-
-      const scenes = customScenes.length
-        ? customScenes
-        : (DEFAULT_CAMPAIGN_SCENES[brand] || DEFAULT_CAMPAIGN_SCENES.meowie);
-
-      const SHARED_TAIL = [
-        'PREMIUM COLOR GRADING & FINISH: apply polished, high-end commercial color grading — rich but controlled saturation, deep confident contrast, clean true blacks and bright-but-not-blown highlights, a subtle cinematic tone curve like a big-budget ad campaign.',
-        'Avoid a dull, flat, snapshot, or amateur look at all costs — this must feel like it belongs in a premium brand advertisement.'
-      ].join(' ');
-
-      const campaignImageUrls = [];
-      // Хамгийн ихдээ 6 orchин — Netlify background function-ий 15 минутын
-      // хугацаанд бүгд багтаах үүднээс хязгаарлав.
-      for (const scene of scenes.slice(0, 6)) {
-        const fullPrompt = [
-          'Generate a single, cohesive, high-resolution professional product photoshoot BACKGROUND SCENE.',
-          'CRITICAL COMPOSITION RULES: this must look like ONE real photograph taken in a single shot, with a clear, intentional, uncluttered composition — not a random pile of unrelated items.',
-          `SCENE: ${scene}.`,
-          'Leave a clear, uncluttered open area (a surface, floor, or open space) roughly in the lower-center of the frame, where a product will be composited in afterward.',
-          SHARED_TAIL
-        ].join(' ');
-
-        try {
-          const background = await generateBackgroundScene(fullPrompt);
-          const placement = await analyzePlacement(background.base64);
-          const composited = await compositeProductOntoBackground({
-            cutoutBase64: cutout.base64,
-            backgroundBase64: background.base64,
-            placement
-          });
-          const url = await commitImageToGithub({ base64Data: composited, brand, extension: 'png' });
-          campaignImageUrls.push(url);
-        } catch (sceneErr) {
-          // Нэг orchин амжилтгүй болсон ч бусдыг нь үргэлжлүүлнэ
-          console.error('Campaign orchин алдаа (алгасав):', sceneErr.message);
-        }
+      const referenceImages = [];
+      for (const url of (referenceImageUrls || [])) {
+        referenceImages.push(await fetchImageAsBase64(url));
+      }
+      let referenceStyleText = null;
+      if (referenceImages.length) {
+        referenceStyleText = await describeReferenceStyle(referenceImages);
       }
 
-      if (!campaignImageUrls.length) {
-        throw new Error('Ямар ч orchин амжилттай үүсгэгдсэнгүй.');
-      }
+      const fullPrompt = [
+        'This is an existing product photo. Re-render it as a MUCH higher quality, professional version of the EXACT SAME photo — same composition, same camera angle, same objects, same background/setting, same framing.',
+        'Do NOT invent a new scene, new background, or new props — only enhance what is already there.',
+        'Improve: sharpness and clarity (crisp, in-focus edges), lighting (clean, well-balanced, professional studio-quality light while preserving the original light direction/mood), color grading (rich but natural, premium commercial color grade), and overall polish — as if a professional photographer had re-shot the exact same setup with better equipment and lighting.',
+        'PRODUCT IDENTITY: every product\'s shape, logo, printed text, and true colors must stay 100% recognizable and accurate.',
+        description ? `Additional direction from the user: ${description}.` : '',
+        referenceStyleText ? `Additional style reference (described in words only): ${referenceStyleText}` : ''
+      ].filter(Boolean).join(' ');
 
-      await docRef.update({
-        status: 'done',
-        imageUrl: campaignImageUrls[0],
-        imageUrls: campaignImageUrls,
-        completedAt: new Date().toISOString()
-      });
-
-      return { statusCode: 200, body: 'OK' };
+      const generated = await generateWithGemini({ productImage, referenceStyleText: null, fullPrompt });
+      finalBase64 = generated.base64Data;
+      finalExtension = (generated.mimeType || 'image/png').split('/')[1] || 'png';
     } else if (effectiveMode === 'compose') {
       // ---------- LIFESTYLE / FLAT LAY / BEAUTIFIER: segmentation + composite ----------
       const productImage = await fetchImageAsBase64(productImageUrl);
